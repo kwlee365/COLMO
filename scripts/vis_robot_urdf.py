@@ -53,9 +53,7 @@ asset_root = f"../assets/"
 # asset_file = "adam_lite/adam_lite.urdf"
 # asset_file = "openloong/AzureLoong.urdf"
 # asset_file = "booster_t1/T1_serial.xml"
-# asset_file = "unitree_h1_2/h1_2.urdf"
-# asset_file = "unitree_h1_2/h1_2_handless.urdf"
-asset_file = "pnd_adam_lite/adam_lite.urdf"
+asset_file = "unitree_g1/g1_mocap_29dof.xml"
 
 # Load asset with default control type of position for all joints
 asset_options = gymapi.AssetOptions()

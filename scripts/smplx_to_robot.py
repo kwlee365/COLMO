@@ -30,10 +30,7 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--robot",
-        choices=["unitree_g1", "unitree_g1_with_hands", "unitree_h1", "unitree_h1_2",
-                 "booster_t1", "booster_t1_29dof","stanford_toddy", "fourier_n1", 
-                "engineai_pm01", "kuavo_s45", "hightorque_hi", "galaxea_r1pro", "berkeley_humanoid_lite", "booster_k1",
-                "pnd_adam_lite", "openloong", "tienkung", "tocabi", "fourier_gr3", "p73"],
+        choices=["unitree_g1", "unitree_h1"],
         default="unitree_g1",
     )
     
@@ -64,14 +61,6 @@ if __name__ == "__main__":
         help="Limit the rate of the retargeted robot motion to keep the same as the human motion.",
     )
 
-    parser.add_argument(
-        "--scale_mode",
-        choices=["table", "calib"],
-        default="table",
-        help="table: use the JSON human_scale_table. "
-             "calib: LSQ-fit the scale table from SMPL-X frame 0.",
-    )
-
     args = parser.parse_args()
 
 
@@ -86,18 +75,13 @@ if __name__ == "__main__":
     smplx_data_frames, aligned_fps = get_smplx_data_offline_fast(smplx_data, body_model, smplx_output, tgt_fps=30)
 
 
-    # Initialize the retargeting system. In "calib" mode the calibration frame
-    # (SMPL-X frame 0) is used to LSQ-fit human_scale_table per-(motion, robot);
-    # in "table" mode (default) the JSON human_scale_table is used as-is. In
-    # "table" mode we also keep the runtime height ratio at 1.0
-    # (actual_human_height=None) so the table is applied verbatim, matching the
-    # BVH path; "calib" needs the actual height for the LSQ scale fit.
-    calibration_frame = smplx_data_frames[0] if args.scale_mode == "calib" else None
+    # Initialize the retargeting system. The JSON human_scale_table is applied
+    # as-is (runtime height ratio kept at 1.0 via actual_human_height=None),
+    # matching the BVH path.
     retarget = GMR(
-        actual_human_height=actual_human_height if args.scale_mode == "calib" else None,
+        actual_human_height=None,
         src_human="smplx",
         tgt_robot=args.robot,
-        calibration_frame=calibration_frame,
     )
     
     robot_motion_viewer = RobotMotionViewer(robot_type=args.robot,

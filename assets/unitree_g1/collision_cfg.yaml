@@ -1,14 +1,34 @@
 # Robot body group definitions and self-collision limit parameters
 parameters:
-  damping: 0.5
-  max_iter: 10
-  velocity_limit : 9
-  collision_avoidance_weight : 0.3
+  # REQUIRED (no code default): construction raises if any of these is missing.
+  damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
+  max_iter: 10              # IK iterations per frame
+  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
+  # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
+  solver : daqp             # QP backend passed to mink.solve_ik
+  warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
+  ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
+  lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
+  motion_fps : 30           # frame rate assumed for the foot-contact threshold
+  ground_offset : -0.01     # per-frame robot ground offset [m] (apply_ground_offset)
+  ground_lift : 0.1         # human lift above ground in offset_human_data_to_ground [m]
+  # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
+  collision_mode : issf
+  # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
+  # Applied as a SOFT QP constraint (DAQP sense=8): honoured when feasible, yields
+  # minimally to the hard collision CBF / joint limits so the QP never goes infeasible.
+  # Comment out / set <=0 to disable.
+  acceleration_limit : 300000
+  # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
+  # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
+  acceleration_softness : 1.0e-6
 
+  cbf_gain : 0.0015 # alpha = 1.5
+  issf_epsilon : 50.0
 
 groups:
-  torso: ["Pelvis", "Waist", "Chest", "Head"]
-  torso_upper: ["Waist", "Chest", "Head"]
+  torso: ["Pelvis", "Chest", "Head"]
+  torso_upper: ["Chest", "Head"]
   
   l_arm_upper: ["Left_Upper_Arm"]
   r_arm_upper: ["Right_Upper_Arm"]
@@ -23,6 +43,8 @@ groups:
 
   l_arm: ["Left_Upper_Arm", "Left_Forearm", "Left_Elbow","Left_Hand1"]
   r_arm: ["Right_Upper_Arm", "Right_Forearm", "Right_Elbow", "Right_Hand1"]
+  l_arm_lower: ["Left_Forearm", "Left_Elbow","Left_Hand1"]
+  r_arm_lower: ["Right_Forearm", "Right_Elbow", "Right_Hand1"]
   l_leg: ["Left_Upper_Leg1", "Left_Upper_Leg2", "Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot"]
   r_leg: ["Right_Upper_Leg1", "Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot"]
   ground: ["floor"]
@@ -37,12 +59,12 @@ collision_limits:
       - ["r_arm", "l_leg"]
       - ["r_arm", "r_leg"]
       - ["r_arm", "l_arm"]
-      - ["l_arm", "torso"]
-      - ["r_arm", "torso"]
-      - ["l_leg_lower", "torso"]
-      - ["r_leg_lower", "torso"]
-      - ["r_leg_upper", "torso_upper"]
-      - ["l_leg_upper", "torso_upper"]
+      - ["l_arm_lower", "torso"]
+      - ["r_arm_lower", "torso"]
+      # - ["l_leg_lower", "torso"]
+      # - ["r_leg_lower", "torso"]
+      # - ["r_leg_upper", "torso_upper"]
+      # - ["l_leg_upper", "torso_upper"]
 
     margin: 0.01
     detect_dist: 0.05

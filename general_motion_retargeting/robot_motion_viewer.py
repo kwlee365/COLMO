@@ -68,6 +68,7 @@ class RobotMotionViewer:
                 video_width=640,
                 video_height=480,
                 keyboard_callback=None,
+                show_collision=False,
                 ):
         self.robot_type = robot_type
         self.xml_path = ROBOT_XML_DICT[robot_type]
@@ -92,7 +93,9 @@ class RobotMotionViewer:
             )      
 
         self.viewer.opt.flags[mj.mjtVisFlag.mjVIS_TRANSPARENT] = transparent_robot
-        self.viewer.opt.geomgroup[2] = 0
+        # Collision geoms live in geom group 2 (see the `cls` default in the
+        # robot XML). Show them when requested, otherwise keep them hidden.
+        self.viewer.opt.geomgroup[2] = 1 if show_collision else 0
 
         
         if self.record_video:

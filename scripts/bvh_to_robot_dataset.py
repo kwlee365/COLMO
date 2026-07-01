@@ -32,7 +32,7 @@ def process_one_bvh(
     frame_stride: int,
     max_frames: int,
     device: str = "cuda:0",
-    scale_mode: str = "table",
+    collision_mode: str = None,
 ):
     # Load BVH
     lafan1_data_frames, actual_human_height = load_lafan1_file(bvh_file_path)
@@ -49,15 +49,12 @@ def process_one_bvh(
     if num_frames == 0:
         raise RuntimeError("No frames after slicing")
 
-    # Init retarget. In "calib" mode the calibration frame (BVH frame 0) is used
-    # to LSQ-fit human_scale_table per-(BVH, robot); in "table" mode (default)
-    # the JSON human_scale_table is used as-is.
-    calibration_frame = lafan1_data_frames[0] if scale_mode == "calib" else None
+    # Init retarget (table mode: JSON human_scale_table, height-ratio scaled).
     retarget = GMR(
         src_human="bvh_lafan1",
         tgt_robot=robot,
         actual_human_height=actual_human_height,
-        calibration_frame=calibration_frame,
+        collision_mode=collision_mode,
     )
 
     # Retarget per frame
@@ -149,9 +146,12 @@ if __name__ == "__main__":
     # NEW: device selection
     parser.add_argument("--device", default="cuda:0", type=str, help="FK device: cuda:0 or cpu")
 
-    parser.add_argument("--scale_mode", choices=["table", "calib"], default="table",
-                        help="table: use the JSON human_scale_table. "
-                             "calib: LSQ-fit the scale table from BVH frame 0.")
+    parser.add_argument("--collision_mode", choices=["cbf", "issf", "off"],
+                        default=None,
+                        help="Collision avoidance mode. cbf: hard QP inequality "
+                             "(mink.CollisionAvoidanceLimit); issf: robustified hard CBF "
+                             "(ISSfCollisionAvoidanceLimit); off. Unset -> YAML "
+                             "parameters.collision_mode or 'issf'.")
 
     args = parser.parse_args()
 
@@ -172,7 +172,7 @@ if __name__ == "__main__":
                 args.frame_stride,
                 args.max_frames,
                 device=args.device,
-                scale_mode=args.scale_mode,
+                collision_mode=args.collision_mode,
             )
             print(f"[green]Saved[/green]: {args.save_path} | frames={nframes} | fps={fps} | time={tel:.1f}s")
 
@@ -202,7 +202,7 @@ if __name__ == "__main__":
                     args.frame_stride,
                     args.max_frames,
                     device=args.device,
-                    scale_mode=args.scale_mode,
+                    collision_mode=args.collision_mode,
                 )
                 tqdm.write(f"Saved: {tgt_file_path} | frames={nframes} | fps={fps} | time={tel:.1f}s")
             except Exception as e:

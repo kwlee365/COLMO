@@ -36,7 +36,7 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--robot",
-        choices=["unitree_g1", "unitree_g1_with_hands", "booster_t1", "stanford_toddy", "fourier_n1", "engineai_pm01", "pal_talos", "tocabi", "p73"],
+        choices=["unitree_g1", "unitree_h1"],
         default="unitree_g1",
     )
     
@@ -72,11 +72,20 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--scale_mode",
-        choices=["table", "calib"],
-        default="table",
-        help="table: use the JSON human_scale_table. "
-             "calib: LSQ-fit the scale table from BVH frame 0.",
+        "--show_collision",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show the robot collision geoms (geom group 2) in the viewer. "
+             "Use --no-show_collision to hide them.",
+    )
+    parser.add_argument(
+        "--collision_mode",
+        choices=["cbf", "issf", "off"],
+        default=None,
+        help="Collision avoidance mode. cbf: hard QP inequality "
+             "(mink.CollisionAvoidanceLimit); issf: robustified hard CBF "
+             "(ISSfCollisionAvoidanceLimit); off. Unset -> YAML "
+             "parameters.collision_mode or 'issf'.",
     )
 
     args = parser.parse_args()
@@ -94,24 +103,29 @@ if __name__ == "__main__":
     
     motion_fps = args.motion_fps
 
-    # Initialize the retargeting system. In "calib" mode the calibration frame
-    # (BVH frame 0) is used to LSQ-fit human_scale_table per-(BVH, robot); in
-    # "table" mode (default) the JSON human_scale_table is used as-is. In "table"
-    # mode we keep the runtime height ratio at 1.0 (actual_human_height=None) so
-    # the table is applied verbatim; "calib" needs the actual height for the fit.
-    calibration_frame = lafan1_data_frames[0] if args.scale_mode == "calib" else None
+    # Initialize the retargeting system (table mode: JSON human_scale_table,
+    # height-ratio scaled by actual_human_height).
     retargeter = GMR(
         src_human=f"bvh_{args.format}",
         tgt_robot=args.robot,
         actual_human_height=actual_human_height,
-        calibration_frame=calibration_frame,
+        collision_mode=args.collision_mode,
     )
     
+    # Spacebar toggles pause in the viewer.
+    paused = False
+    def keyboard_callback(keycode):
+        global paused
+        if keycode == 32:  # spacebar
+            paused = not paused
+
     robot_motion_viewer = RobotMotionViewer(robot_type=args.robot,
                                             motion_fps=motion_fps,
                                             transparent_robot=0,
                                             record_video=args.record_video,
                                             video_path=args.video_path,
+                                            show_collision=args.show_collision,
+                                            keyboard_callback=keyboard_callback,
                                             # video_width=2080,
                                             # video_height=1170
                                             )
@@ -128,11 +142,26 @@ if __name__ == "__main__":
     
     # Start the viewer
     i = 0
-    
+    last_qpos = None
 
 
     while True:
-        
+
+        # Paused: keep rendering the current pose (so the window stays live and
+        # spacebar can unpause) without advancing the motion.
+        if paused and last_qpos is not None:
+            robot_motion_viewer.step(
+                root_pos=last_qpos[:3],
+                root_rot=last_qpos[3:7],
+                dof_pos=last_qpos[7:],
+                human_motion_data=retargeter.scaled_human_data,
+                contact_points=retargeter.get_contact_point_positions(),
+                rate_limit=args.rate_limit,
+                follow_camera=True,
+            )
+            time.sleep(0.01)
+            continue
+
         # FPS measurement
         fps_counter += 1
         current_time = time.time()
@@ -150,6 +179,7 @@ if __name__ == "__main__":
 
         # retarget
         qpos = retargeter.retarget(smplx_data)
+
         
 
         # visualize
@@ -163,6 +193,7 @@ if __name__ == "__main__":
             follow_camera=True, #change to True if you want the camera to follow the robot
             # human_pos_offset=np.array([0.0, 0.0, 0.0])
         )
+        last_qpos = qpos
 
         if args.loop:
             i = (i + 1) % len(lafan1_data_frames)

@@ -26,11 +26,9 @@ if __name__ == "__main__":
         "--robot",
         choices=[
             "unitree_g1",
-            "unitree_h1_2",
-            "Q1",
-            "X1",
+            "unitree_h1",
         ],
-        default="unitree_h1_2",
+        default="unitree_g1",
     )
 
     parser.add_argument(

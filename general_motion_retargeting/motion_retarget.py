@@ -1,4 +1,3 @@
-import copy
 import mink
 import mujoco as mj
 import numpy as np
@@ -9,127 +8,91 @@ from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT, ASSET_ROOT
 from rich import print
 from mink.exceptions import TargetNotSet
+from mink.constants import dof_width
+from mink.solve_ik import _compute_qp_objective, _compute_qp_inequalities
+import daqp
+from ctypes import c_int
 
-class CollisionBarrierTask(mink.Task):
+# Supported collision-avoidance modes for GeneralMotionRetargeting:
+#   "cbf"  : hard QP inequality CBF (mink.CollisionAvoidanceLimit) added to the IK limits.
+#   "issf" : hard QP inequality with the ISSf-CBF robustness margin
+#            (ISSfCollisionAvoidanceLimit); a robustified variant of "cbf".
+#   "off"  : no active collision avoidance (diagnostics are still logged).
+COLLISION_MODES = ("cbf", "issf", "off")
+
+
+def _require_param(params, key):
+    """Fetch a REQUIRED parameter from collision_cfg.yaml `parameters:` (no built-in
+    default). Raises KeyError if it is missing so misconfiguration fails loudly."""
+    if key not in params:
+        raise KeyError(
+            f"collision_cfg.yaml 'parameters:' must define '{key}' (no built-in default)."
+        )
+    return params[key]
+
+
+class ISSfCollisionAvoidanceLimit(mink.CollisionAvoidanceLimit):
     """
-    Soft collision avoidance via a logarithmic barrier.
+    ISSf-CBF variant of mink's collision avoidance limit.
 
-    For each active geom pair (i, j):
+    mink's stock limit enforces the discrete CBF condition (per active geom pair):
 
-        d(q)   : signed distance between geom i and j
-        d_min  : minimum safety margin
-        h(q)   = d(q) - d_min
+        J_AB q_dot  >=  -alpha * h_AB,      alpha = cbf_gain / dt,   h_AB = d - d_min
 
-    When d(q) < detect_dist, we introduce a barrier term:
+    This subclass adds the Input-to-State-Safe (ISSf) robustness margin (eq. 45):
 
-        φ(q) = -log(h(q))
+        J_AB q_dot  >=  -alpha * h_AB  +  (1 / eps) * ||J_AB||_2^2
 
-    Linearized at the current configuration:
+    The extra +(1/eps)||J_AB||^2 term raises the required separation rate near the
+    boundary, giving a configuration-adaptive robustness margin: where the distance
+    is sensitive to joint motion (large ||J_AB||) the margin grows. Smaller eps
+    => larger margin (more conservative); eps -> inf recovers the plain CBF.
 
-        ∂φ/∂q = -(1 / h(q)) * ∂h/∂q
+    Why a subclass and not `bound_relaxation`: that term is a single per-limit scalar
+    fixed at construction, but ||J_AB(q)|| is per-pair AND configuration-dependent,
+    so it must be recomputed for every row at every IK iteration.
 
-    which yields an additional task row:
+    In mink's stored form `G v <= h` (where, in BOTH the non-penetrating and
+    penetrating branches, `sign*row . v <= h` is equivalent to `h_dot >= -h_upper`),
+    the +(1/eps)||J||^2 term lands as a NEGATIVE offset on the upper bound.
 
-        J_bar = -(1 / h) * J_h
-        e_bar = 0
-
-    where:
-        J_h = ∂h/∂q  (contact normal Jacobian)
-
-    NOTE:
-        The barrier is valid only for h(q) > 0 (no penetration).
-        This term contributes as a soft cost in the IK QP.
+    NOTE on sign/norm: this uses the SQUARED L2 norm ||J_AB||^2 (the standard ISSf-CBF
+    robustness term, 1/eps * ||L_g h||^2), with the margin tightening the constraint.
+    For the first-power variant, drop the `** 2` on `np.linalg.norm(row)` below.
     """
-    def __init__(
-        self,
-        model: mj.MjModel,
-        collision_limits,
-        w_bar: float = 0.0,
-        name: str = "collision_barrier",
-    ):
-        super().__init__(cost=np.zeros(0))
-        self.model = model
-        self.collision_limits = collision_limits
-        self.w_bar = float(w_bar)
-        self.name = name
-        self.h_eps = 1.5e-3  # small epsilon to prevent singularity when h is close to zero
-        self._J = np.zeros((0, model.nv))
-        self._e = np.zeros((0,))
-        self._w = np.zeros((0,))
-        self._fromto = np.zeros(6, dtype=np.float64)
-        self._normal = np.zeros(3, dtype=np.float64)
-        self._jac1 = np.zeros((3, model.nv), dtype=np.float64)
-        self._jac2 = np.zeros((3, model.nv), dtype=np.float64)
 
+    def __init__(self, *args, issf_epsilon: float = 1.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.issf_epsilon = float(issf_epsilon)
 
-    def _relaxed_barrier_gradient(self, h: float) -> float:
-        delta = self.h_eps
-        if h >= delta:
-            # Log region: dB/dh = -1/h
-            return -1.0 / h
-        else:
-            # Quadratic region: dB/dh = (h - 2*delta) / delta^2
-            return (h - 2 * delta) / (delta ** 2)
-
-    def update(self, configuration: mink.Configuration):
+    def compute_qp_inequalities(self, configuration, dt):
         model = self.model
         data = configuration.data
+        upper_bound = np.full((self.max_num_contacts,), np.inf)
+        coefficient_matrix = np.zeros((self.max_num_contacts, model.nv))
+        distmax = self.collision_detection_distance
+        min_dist = self.minimum_distance_from_collisions
+        cbf_gain = self.gain  # mink's CollisionAvoidanceLimit stores the gain kwarg here
+        eps = self.issf_epsilon
+        for idx, (geom1_id, geom2_id) in enumerate(self.geom_id_pairs):
+            dist = mj.mj_geomDistance(model, data, geom1_id, geom2_id, distmax, self._fromto)
+            if abs(dist - distmax) < 1e-12:
+                continue
+            row = mink.limits.collision_avoidance_limit.compute_contact_normal_jacobian(
+                model, data, geom1_id, geom2_id,
+                self._fromto, self._normal, self._jac1, self._jac2,
+            )
+            # ISSf robustness margin (1/eps)*||J_AB||_2^2, per-pair & per-q.
+            # Appears as a negative offset on the upper bound in both branches.
+            issf_margin = np.linalg.norm(row) ** 2 / eps
+            if dist > min_dist:
+                upper_bound[idx] = (cbf_gain * (dist - min_dist) / dt) - issf_margin + self.bound_relaxation
+            else:
+                upper_bound[idx] = -issf_margin + self.bound_relaxation
+            sign = -1.0 if dist >= 0 else 1.0
+            coefficient_matrix[idx] = sign * row
+        return mink.Constraint(G=coefficient_matrix, h=upper_bound)
 
-        J_rows = []
-        e_rows = []
-        w_rows = []
-
-        mj.mj_fwdPosition(model, data)
-
-        for limit in self.collision_limits:
-            d_min = float(limit.minimum_distance_from_collisions)
-            detect_dist = float(limit.collision_detection_distance)
-
-            for geom_a, geom_b in limit.geom_id_pairs:
-                if geom_a < 0 or geom_b < 0:
-                    continue
-
-                dist = mj.mj_geomDistance(model, data, geom_a, geom_b, detect_dist, self._fromto)
-
-                # Activate barrier only when inside the detection band (d < detect_dist)
-                if dist >= detect_dist:
-                    continue
-                
-                # Safety function for barrier: h(q) = d(q) - d_min
-                h = float(dist - d_min)
-
-                # Contact normal Jacobian: J_h = ∂h/∂q
-                J_h = mink.limits.collision_avoidance_limit.compute_contact_normal_jacobian(
-                    model, data, geom_a, geom_b,
-                    self._fromto, self._normal, self._jac1, self._jac2,
-                ).reshape(1, -1)
-
-                dBdh = self._relaxed_barrier_gradient(h)
-                J_bar = dBdh * J_h
-                e_bar = 0.0
-
-                J_rows.append(J_bar)
-                e_rows.append(np.array([e_bar]))
-                w_rows.append(np.array([self.w_bar]))
-
-        if len(J_rows) == 0:
-            self._J = np.zeros((0, model.nv))
-            self._e = np.zeros((0,))
-            self._w = np.zeros((0,))
-            self.cost = self._w
-            return
-
-        self._J = np.vstack(J_rows)
-        self._e = np.concatenate(e_rows)
-        self._w = np.concatenate(w_rows)
-
-        self.cost = self._w.copy()
-
-    def compute_jacobian(self, configuration):
-        return self._J
-
-    def compute_error(self, configuration):
-        return self._e
 
 class FootContactLimit(mink.Limit):
     """
@@ -151,6 +114,7 @@ class FootContactLimit(mink.Limit):
         human_body_names: list,     # list of human body names, one per contact point
         threshold: float = 0.01,    # m/s — contact activates when human foot speed <= threshold
         velocity_bound: float = 0.0,
+        fps: float = 30,            # motion frame rate used to convert threshold m/s -> m/frame
         name: str = "foot_contact",
     ):
         self.model = model
@@ -158,6 +122,7 @@ class FootContactLimit(mink.Limit):
         self.human_body_names = human_body_names
         self.threshold = threshold
         self.velocity_bound = velocity_bound  # max contact-point XY velocity [m/s]
+        self.fps = fps
         self.name = name
         self._prev_human_pos = {}              # human_body_name -> np.ndarray(3,)
         self._active_mask = [False] * len(contact_points)  # per-point contact state
@@ -167,7 +132,7 @@ class FootContactLimit(mink.Limit):
 
         human_data: dict of {human_body_name: (pos, rot)} for the current frame
         """
-        threshold_pos = self.threshold / 30  # convert m/s threshold to meters per frame (fixed 30 fps)
+        threshold_pos = self.threshold / self.fps  # m/s threshold -> meters per frame
         for i, human_name in enumerate(self.human_body_names):
             if human_name not in human_data:
                 self._active_mask[i] = False
@@ -229,6 +194,87 @@ def find_geoms(model, names):
             gids.append(gid)
     return gids
 
+
+class AccelerationLimit(mink.Limit):
+    """Hard QP limit on the per-frame change in joint velocity (acceleration).
+
+    Enforces, per actuated joint,
+
+        |q_dot - q_dot_prev| <= qddot_max * dt
+
+    where q_dot_prev is the previous frame's joint velocity. The IK QP decision
+    variable is the tangent displacement Δq = q_dot * dt, and this codebase runs
+    several solve_ik iterations per frame (integrating Δq each time). A naive box
+    centered at q_dot_prev*dt would force every later iteration to keep moving at
+    q_dot_prev (breaking convergence), so the bound is written on the NET tangent
+    displacement accumulated since the frame start,
+
+        d = q ⊖ q_frame_start,
+
+    giving, for this iteration's Δq,
+
+        v_prev*dt - a_max*dt^2 <= d + Δq <= v_prev*dt + a_max*dt^2.
+
+    As d approaches the bound the admissible Δq shrinks to zero, so the limit caps
+    the frame velocity jump without preventing the inner loop from converging.
+    Because it lives inside the same QP as the collision limits, the solver keeps
+    collision safety (the CBF) AND the acceleration bound simultaneously.
+
+    Floating-base DoFs are ignored (mirrors mink.VelocityLimit).
+    """
+
+    def __init__(self, model, accelerations):
+        """
+        Args:
+            model: MuJoCo model.
+            accelerations: dict joint_name -> max |qddot| ([rad]/[s^2] for hinge,
+                [m]/[s^2] for slide).
+        """
+        self.model = model
+        limit_list, index_list = [], []
+        for joint_name, max_acc in accelerations.items():
+            jid = model.joint(joint_name).id
+            jnt_type = model.jnt_type[jid]
+            if jnt_type == mj.mjtJoint.mjJNT_FREE:
+                raise ValueError(f"Free joint {joint_name} is not supported")
+            vadr = model.jnt_dofadr[jid]
+            vdim = dof_width(int(jnt_type))
+            max_acc = np.atleast_1d(max_acc)
+            index_list.extend(range(vadr, vadr + vdim))
+            limit_list.extend(np.broadcast_to(max_acc, (vdim,)).tolist())
+
+        self.indices = np.array(index_list, dtype=int)
+        self.limit = np.array(limit_list, dtype=float)
+        nb = len(self.indices)
+        self.projection_matrix = np.eye(model.nv)[self.indices] if nb > 0 else None
+
+        # Per-frame state, refreshed once per frame via set_frame().
+        self.q_frame_start = None              # qpos at the start of the current frame
+        self.v_prev = np.zeros(model.nv)       # previous frame's tangent velocity
+
+    def set_frame(self, q_frame_start, v_prev):
+        """Latch the frame-start configuration and the previous frame velocity."""
+        self.q_frame_start = np.array(q_frame_start, dtype=float)
+        self.v_prev = np.array(v_prev, dtype=float)
+
+    def compute_qp_inequalities(self, configuration, dt):
+        if self.projection_matrix is None or self.q_frame_start is None:
+            return mink.Constraint()
+        # Net tangent displacement so far this frame: d = q ⊖ q_frame_start.
+        d = np.zeros(self.model.nv)
+        mj.mj_differentiatePos(self.model, d, 1.0, self.q_frame_start, configuration.q)
+
+        a_dt2 = self.limit * dt * dt                 # a_max * dt^2 (per limited joint)
+        vprev_dt = self.v_prev[self.indices] * dt    # v_prev * dt
+        d_lim = d[self.indices]
+
+        # +Δq rows:  Δq <=  v_prev*dt + a*dt^2 - d
+        # -Δq rows: -Δq <= -v_prev*dt + a*dt^2 + d
+        G = np.vstack([self.projection_matrix, -self.projection_matrix])
+        h = np.hstack([vprev_dt + a_dt2 - d_lim, -vprev_dt + a_dt2 + d_lim])
+        return mink.Constraint(G=G, h=h)
+
+
 class GeneralMotionRetargeting:
     """General Motion Retargeting (GMR).
     """
@@ -237,16 +283,11 @@ class GeneralMotionRetargeting:
         src_human: str,
         tgt_robot: str,
         actual_human_height: float = None,
-        solver: str="daqp", # change from "quadprog" to "daqp".
-        damping: float=0.05,
         verbose: bool=True,
         use_velocity_limit: bool=True,
-        calibration_frame: dict = None,
-        calib_iters: int = 3,
-        _ik_config_override: dict = None,
+        collision_mode: str = None,
     ) -> None:
         self._warmup_done = False
-        self._warmup_iters = 100
         self.src_human = src_human
         self.tgt_robot = tgt_robot
         self.actual_human_height = actual_human_height
@@ -284,18 +325,11 @@ class GeneralMotionRetargeting:
             if verbose:
                 print(f"Motor ID {i}: {motor_name}")
 
-        # Load the IK config (or use override for in-process orientation-only pre-pass)
-        if _ik_config_override is not None:
-            ik_config = _ik_config_override
-        else:
-            with open(IK_CONFIG_DICT[src_human][tgt_robot]) as f:
-                ik_config = json.load(f)
-            if verbose:
-                print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
-
-        # Keep a pristine copy of the raw config so dynamic calibration can
-        # rebuild an orientation-only variant from it later.
-        self._raw_ik_config = copy.deepcopy(ik_config)
+        # Load the IK config
+        with open(IK_CONFIG_DICT[src_human][tgt_robot], encoding="utf-8") as f:
+            ik_config = json.load(f)
+        if verbose:
+            print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
 
         # compute the scale ratio based on given human height and the assumption in the IK config
         if actual_human_height is not None:
@@ -317,11 +351,7 @@ class GeneralMotionRetargeting:
         self.human_scale_table = ik_config["human_scale_table"]
         self.ground = ik_config["ground_height"] * np.array([0, 0, 1])
 
-        self.max_iter = 10
-        self.solver = solver
-        self.damping = damping
-        self.vel_limit=3.0
-        self.collision_weight = 1.0
+        self.verbose = verbose
 
         self.human_body_to_task1 = {}
         self.human_body_to_task2 = {}
@@ -340,19 +370,56 @@ class GeneralMotionRetargeting:
 
         # Load robot-specific collision parameters from an external YAML file
         collision_cfg_path = ASSET_ROOT / tgt_robot / "collision_cfg.yaml"
-        with open(collision_cfg_path, 'r') as f:
+        with open(collision_cfg_path, 'r', encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
 
         # Override IK solver parameters with values from the configuration
         params = cfg.get('parameters', {})
-        self.damping = params.get('damping', damping)
-        self.max_iter = params.get('max_iter', 10)
-        self.vel_limit = params.get('velocity_limit', 10)
-        
-        # Global weight for the SOFT collision barrier task
-        self.collision_weight = params.get('collision_avoidance_weight', 1.0)
+        # REQUIRED params: must be defined in collision_cfg.yaml or construction fails.
+        self.damping = _require_param(params, 'damping')
+        self.max_iter = _require_param(params, 'max_iter')
+        self.vel_limit = _require_param(params, 'velocity_limit')
+        # IK solver / loop tuning, externalized to YAML (back-compat defaults kept).
+        self.solver = params.get('solver', 'daqp')
+        self._warmup_iters = params.get('warmup_iters', 500)
+        self.ik_tol = params.get('ik_convergence_tol', 1e-8)   # IK loop early-stop tol
+        self.lm_damping = params.get('lm_damping', 1.0)        # per-FrameTask LM damping
+        self.motion_fps = params.get('motion_fps', 30)         # foot-contact fps assumption
+        self.ground_offset = params.get('ground_offset', -0.01)  # per-frame robot ground offset [m]
+        self.ground_lift = params.get('ground_lift', 0.1)      # offset_human_data_to_ground lift [m]
+        # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (soft QP
+        # limit, see AccelerationLimit). None/<=0 disables it.
+        self.acc_limit = params.get('acceleration_limit', None)
 
+        # Collision-avoidance mode switch. Priority: explicit constructor arg >
+        # YAML parameters.collision_mode > default "issf". See COLLISION_MODES.
+        #   cbf  -> hard QP inequality (mink.CollisionAvoidanceLimit)
+        #   issf -> hard QP inequality with the ISSf-CBF robustness margin
+        #   off  -> none (diagnostics still logged)
+        if collision_mode is None:
+            collision_mode = params.get('collision_mode', 'issf')
+        collision_mode = str(collision_mode).lower()
+        if collision_mode not in COLLISION_MODES:
+            raise ValueError(
+                f"collision_mode must be one of {COLLISION_MODES}, got {collision_mode!r}"
+            )
+        self.collision_mode = collision_mode
+        self.use_collision_constraint = collision_mode in ("cbf", "issf")
+        self.use_issf = collision_mode == "issf"
+        # ISSf robustness scale (eq. 45): margin = ||J_AB|| / issf_epsilon.
+        # Larger epsilon -> milder margin (epsilon -> inf recovers the plain CBF).
+        self.issf_epsilon = params.get('issf_epsilon', 50.0)
 
+        # Global defaults for the per-pair collision-limit parameters. Each entry in
+        # collision_limits: may still override any of these; otherwise these apply.
+        #   cbf_gain        : CBF rate in (0, 1] (hard-constraint path only).
+        #   margin      : minimum safety distance d_min in h(q) = d - d_min [m].
+        #   detect_dist : distance band within which the limit/barrier activates [m].
+        # margin / detect_dist default to None (no global default) so a missing value
+        # is reported instead of silently defaulting.
+        self.collision_gain = params.get('cbf_gain', 0.001)
+        self.collision_margin = params.get('margin', None)
+        self.collision_detect_dist = params.get('detect_dist', None)
 
         if use_velocity_limit:
             VELOCITY_LIMITS = {}
@@ -368,36 +435,95 @@ class GeneralMotionRetargeting:
             # Hard velocity bound
             self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS))
 
+        # Per-frame acceleration bound |q_dot - q_dot_prev| <= a_max*dt on the actuated
+        # joints. Applied as a SOFT QP constraint (DAQP sense=8) rather than a hard
+        # inequality: it is honoured exactly whenever feasible but yields (minimal
+        # violation) when it would otherwise conflict with the hard collision CBF or a
+        # joint limit, so the QP never becomes infeasible. NOT added to self.ik_limits;
+        # the soft rows are injected in _solve_ik_soft_accel(). Opt-in via
+        # parameters.acceleration_limit; softness via parameters.acceleration_softness
+        # (DAQP rho_soft: smaller -> nearer-hard / stronger smoothing, larger -> softer).
+        self.accel_limit = None
+        self.accel_rho_soft = float(params.get('acceleration_softness', 1e-6))
+        if self.acc_limit is not None and float(self.acc_limit) > 0.0:
+            ACCEL_LIMITS = {}
+            for a_id in range(self.model.nu):
+                j_id = int(self.model.actuator_trnid[a_id, 0])
+                if j_id < 0:
+                    continue
+                j_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, j_id)
+                if j_name is None:
+                    continue
+                ACCEL_LIMITS[j_name] = float(self.acc_limit)
+            self.accel_limit = AccelerationLimit(self.model, ACCEL_LIMITS)
+        # Previous-frame joint velocity (tangent space) consumed by the accel limit.
+        self._accel_v_prev = np.zeros(self.model.nv)
 
-
-        
         if verbose:
             print(f"[GMR] Final Parameters ->  Damping: {self.damping}, Max Iterations: {self.max_iter}")
-            print(f"Velocity Limit: {self.vel_limit}, Collision Avoidance weight: {self.collision_weight}"
-)
+            print(f"Velocity Limit: {self.vel_limit}")
+            print(f"[GMR] Acceleration Limit (soft): "
+                  f"{f'{self.acc_limit} (rho_soft={self.accel_rho_soft})' if self.accel_limit is not None else 'off'}")
+            print(f"[GMR] Collision mode: {self.collision_mode} "
+                  f"(constraint={self.use_collision_constraint}"
+                  f"{f', issf_epsilon={self.issf_epsilon}' if self.use_issf else ''})")
         
         # Resolve collision groups and individual geometries
         self.groups = cfg['groups']
         self.all_collision_limits = []
 
 
-        # Build collision pair metadata for the soft barrier task
+        # Build collision pair metadata. Each limit provides geom pairs / margin /
+        # detect_dist (h(q) = d - d_min) and, in "cbf"/"issf" mode, is registered as a
+        # hard QP inequality in self.ik_limits.
         for limit_cfg in cfg['collision_limits']:
             geom_pairs = []
-            
+
             for p_a, p_b in limit_cfg['pairs']:
                 list_a = self.groups.get(p_a, [p_a] if isinstance(p_a, str) else p_a)
                 list_b = self.groups.get(p_b, [p_b] if isinstance(p_b, str) else p_b)
                 geom_pairs.append((list_a, list_b))
 
-            # Provides geom pairs, d_min and detect_dist used in h(q) = d - d_min
-            limit_obj = mink.CollisionAvoidanceLimit(
-                model=self.model,
-                geom_pairs=geom_pairs,
-                minimum_distance_from_collisions=limit_cfg['margin'],
-                collision_detection_distance=limit_cfg['detect_dist'],
-            )
-            self.all_collision_limits.append(limit_obj)            
+            # Resolve per-pair parameters, each falling back to the global default
+            # from parameters: (see self.collision_*). `cbf_gain` (in (0, 1]) only affects
+            # the CBF/issf hard-constraint path. margin (d_min) and detect_dist define
+            # h(q) = d - d_min and its activation band. In "issf" mode the ISSf-CBF
+            # variant adds the per-pair (1/eps)||J_AB|| robustness margin (eq. 45).
+            cbf_gain = float(limit_cfg.get('cbf_gain', self.collision_gain))
+            margin = limit_cfg.get('margin', self.collision_margin)
+            detect_dist = limit_cfg.get('detect_dist', self.collision_detect_dist)
+            issf_eps = float(limit_cfg.get('issf_epsilon', self.issf_epsilon))
+            if margin is None or detect_dist is None:
+                raise ValueError(
+                    f"collision limit {limit_cfg.get('pairs')}: 'margin' and "
+                    f"'detect_dist' must be set either per-pair in collision_limits: "
+                    f"or globally in parameters:."
+                )
+            margin = float(margin)
+            detect_dist = float(detect_dist)
+
+            if self.use_issf:
+                limit_obj = ISSfCollisionAvoidanceLimit(
+                    model=self.model,
+                    geom_pairs=geom_pairs,
+                    gain=cbf_gain,
+                    minimum_distance_from_collisions=margin,
+                    collision_detection_distance=detect_dist,
+                    issf_epsilon=issf_eps,
+                )
+            else:
+                limit_obj = mink.CollisionAvoidanceLimit(
+                    model=self.model,
+                    geom_pairs=geom_pairs,
+                    gain=cbf_gain,
+                    minimum_distance_from_collisions=margin,
+                    collision_detection_distance=detect_dist,
+                )
+            self.all_collision_limits.append(limit_obj)
+
+            # Hard QP inequality (mink's native collision avoidance constraint).
+            if self.use_collision_constraint:
+                self.ik_limits.append(limit_obj)
 
         # Store foot contact config for setup after ik_match_tables are loaded
         self._fc_cfg = cfg.get('foot_contact', {})
@@ -443,6 +569,7 @@ class GeneralMotionRetargeting:
                     human_body_names=human_body_names,
                     threshold=fc_threshold,
                     velocity_bound=fc_velocity_bound,
+                    fps=self.motion_fps,
                 )
                 self.ik_limits.append(self.foot_contact_limit)
                 if verbose:
@@ -450,13 +577,12 @@ class GeneralMotionRetargeting:
                     robot_names = [mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, bid) for bid, _ in contact_points]
                     pairs = list(zip(robot_names, human_body_names))
                     print(f"[GMR] FootContactLimit enabled | {pairs} | "
-                          f"threshold: {fc_threshold} m/s | human_fps: 30 Hz | "
-                          f"threshold_pos: {fc_threshold / 30 * 1000:.3f} mm/frame | "
+                          f"threshold: {fc_threshold} m/s | human_fps: {self.motion_fps} Hz | "
+                          f"threshold_pos: {fc_threshold / self.motion_fps * 1000:.3f} mm/frame | "
                           f"velocity_bound: {fc_velocity_bound} m/s")
             else:
                 print("[GMR][FootContact] WARNING: no valid contact points found, limit disabled.")
 
-        self.ground_offset = -0.01
         self.floor_gid = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_GEOM, "floor")
         foot_geoms_cfg = cfg.get('foot_geoms', {})
         left_candidates = foot_geoms_cfg.get('left', [])
@@ -480,136 +606,6 @@ class GeneralMotionRetargeting:
         
 
         assert self.floor_gid != -1, "geom 'floor' not found"
-
-        # Per-(BVH, robot) scale_table calibration: replace the JSON-loaded scales
-        # with values fit to the supplied calibration frame. See _calibrate_scale_table.
-        if calibration_frame is not None:
-            self._calibrate_scale_table(calibration_frame, calib_iters, verbose=verbose)
-
-
-
-    def _calibrate_scale_table(self, h_frame, calib_iters: int, verbose: bool = True):
-        """Per-(BVH, robot) scale_table calibration via orientation-only IK pre-pass + LSQ.
-
-        Mirrors logic in scripts/vis_calibrate_scale.py: pose the robot to match the
-        calibration frame's joint orientations, then LSQ-fit a single scale per
-        L/R-symmetric group from root-relative distances. The result replaces
-        self.human_scale_table directly (no runtime ratio multiplication since the
-        LSQ already encodes the actual person's link ratios).
-        """
-        # Derive tracked human bodies from IK tables (not from JSON scale_table),
-        # so calibration also works when JSON's human_scale_table is empty.
-        h_root_name = self._raw_ik_config["human_root_name"]
-        tracked_h_bodies = {h_root_name}
-        for table_key in ("ik_match_table1", "ik_match_table2"):
-            for r_body, entry in self._raw_ik_config.get(table_key, {}).items():
-                tracked_h_bodies.add(entry[0])
-
-        # 1) Build orientation-only config in-memory: zero all pos_weights, set
-        #    scales to 1.0 (the inner pass doesn't need scaling). human_height
-        #    assumption is set equal to actual so the inner ratio collapses to 1.
-        calib_config = copy.deepcopy(self._raw_ik_config)
-        for table_key in ("ik_match_table1", "ik_match_table2"):
-            for body, entry in calib_config.get(table_key, {}).items():
-                # entry: [human_body, pos_weight, rot_weight, pos_offset, rot_offset]
-                entry[1] = 0
-        # Populate scale_table for every tracked body + root, regardless of what
-        # the JSON had — scale_human_data must find the root key at minimum.
-        calib_config["human_scale_table"] = {b: 1.0 for b in tracked_h_bodies}
-        if self.actual_human_height is not None:
-            calib_config["human_height_assumption"] = self.actual_human_height
-
-        # 2) Inner GMR: same robot/source, but orientation-only and no recursion.
-        inner = GeneralMotionRetargeting(
-            src_human=self.src_human,
-            tgt_robot=self.tgt_robot,
-            actual_human_height=self.actual_human_height,
-            verbose=False,
-            _ik_config_override=calib_config,
-            calibration_frame=None,
-        )
-        qpos = inner.retarget(h_frame)
-        for _ in range(max(0, calib_iters)):
-            qpos = inner.retarget(h_frame)
-
-        # 3) Apply inner qpos to outer configuration to read robot link positions.
-        self.configuration.data.qpos[:] = qpos
-        mj.mj_forward(self.model, self.configuration.data)
-        data = self.configuration.data
-
-        # 4) Human→robot body mapping from the (raw) IK tables.
-        h_to_r = {}
-        for table_key in ("ik_match_table1", "ik_match_table2"):
-            for r_body, entry in self._raw_ik_config.get(table_key, {}).items():
-                h_to_r.setdefault(entry[0], r_body)
-
-        # 5) Root-relative distances for every tracked body.
-        r_root_name = self._raw_ik_config["robot_root_name"]
-        h_root_pos = np.asarray(h_frame[h_root_name][0])
-        r_root_pos = data.xpos[self.model.body(r_root_name).id].copy()
-
-        measurements = {}
-        skipped = []
-        for h_body in tracked_h_bodies:
-            if h_body == h_root_name:
-                continue
-            if h_body not in h_to_r or h_body not in h_frame:
-                skipped.append(h_body)
-                continue
-            try:
-                r_bid = self.model.body(h_to_r[h_body]).id
-            except KeyError:
-                skipped.append(h_body)
-                continue
-            d_h = float(np.linalg.norm(np.asarray(h_frame[h_body][0]) - h_root_pos))
-            d_r = float(np.linalg.norm(data.xpos[r_bid] - r_root_pos))
-            if d_h < 1e-6:
-                skipped.append(h_body)
-                continue
-            measurements[h_body] = (d_h, d_r)
-
-        # 6) Group L/R-symmetric pairs (e.g. LeftArm + RightArm) under one scale.
-        def pair_key(name):
-            for prefix in ("Left", "Right"):
-                if name.startswith(prefix) and len(name) > len(prefix):
-                    return name[len(prefix):]
-            return name
-
-        groups = defaultdict(list)
-        for body in tracked_h_bodies:
-            groups[pair_key(body)].append(body)
-
-        # 7) Build fresh scale table (default 1.0); fill from LSQ below.
-        new_scale_table = {b: 1.0 for b in tracked_h_bodies}
-        # Root scale = z-ratio (single-equation case; root has d_h = 0).
-        h_root_z = float(h_root_pos[2])
-        r_root_z = float(r_root_pos[2])
-        if abs(h_root_z) > 1e-6:
-            new_scale_table[h_root_name] = r_root_z / h_root_z
-
-        # 8) Per-pair LSQ: s = Σ(d_h·d_r) / Σ(d_h²). Single-body groups collapse
-        #    to d_r/d_h; L/R pairs average across both measurements.
-        for gk, bodies in groups.items():
-            if gk == h_root_name:
-                continue
-            pair_data = [measurements[b] for b in bodies if b in measurements]
-            if not pair_data:
-                continue
-            d_h_arr = np.array([p[0] for p in pair_data])
-            d_r_arr = np.array([p[1] for p in pair_data])
-            s = float(np.sum(d_h_arr * d_r_arr) / np.sum(d_h_arr ** 2))
-            for b in bodies:
-                new_scale_table[b] = s
-
-        # 9) Overwrite outer scale table (already-applied JSON ratio is discarded).
-        self.human_scale_table = new_scale_table
-        if verbose:
-            print(f"[GMR][Calibrate] scale_table updated from frame 0 "
-                  f"(src={self.src_human}, robot={self.tgt_robot}):")
-            for k, v in new_scale_table.items():
-                print(f"  {k:18s} = {v:.4f}")
-            if skipped:
-                print(f"[GMR][Calibrate] skipped (no mapping or zero distance): {skipped}")
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
@@ -647,7 +643,7 @@ class GeneralMotionRetargeting:
                 frame_type="body",
                 position_cost=pos_weight,
                 orientation_cost=rot_weight,
-                lm_damping=1,
+                lm_damping=self.lm_damping,
             )
             
             # NOTE: Multiple robot tasks may track the same human body part. 
@@ -674,7 +670,7 @@ class GeneralMotionRetargeting:
                 frame_type="body",
                 position_cost=pos_weight,
                 orientation_cost=rot_weight,
-                lm_damping=1,
+                lm_damping=self.lm_damping,
             )
 
             self.human_body_to_task2[body_name] = task
@@ -685,62 +681,6 @@ class GeneralMotionRetargeting:
 
             self.tasks2_targets.append(task)
             self.tasks2_solver.append(task)
-
-        # Soft collision cost added to both stages
-        self.collision_barrier_task = CollisionBarrierTask(
-            model=self.model,
-            collision_limits=self.all_collision_limits,
-            w_bar = self.collision_weight,
-        )
-        self.tasks1_solver.append(self.collision_barrier_task)
-        self.tasks2_solver.append(self.collision_barrier_task)
-
-
-    def calibrate_offsets_from_initial_pose(self, human_data_init, verbose=True):
-        """Replace JSON-loaded rotation offsets with values derived from the
-        initial robot pose (qpos0) and the initial human motion frame.
-
-        For each (robot_body, human_body) pair active in the IK match tables:
-            R_off = R_human_init^{-1} @ R_robot_init
-        which guarantees R_target = R_human * R_off equals R_robot at frame 0.
-
-        Must be called before the first retarget(). Robot configuration is
-        not modified.
-        """
-        tmp_data = mj.MjData(self.model)
-        mj.mj_forward(self.model, tmp_data)
-
-        def _calibrate(match_table, rot_offsets_store, tag):
-            for robot_body, entry in match_table.items():
-                human_body, pos_w, rot_w = entry[0], entry[1], entry[2]
-                if pos_w == 0 and rot_w == 0:
-                    continue
-                bid = self.robot_body_names.get(robot_body)
-                if bid is None:
-                    print(f"[CAL][{tag}] robot body '{robot_body}' not in model, keep JSON value.")
-                    continue
-                if human_body not in human_data_init:
-                    print(f"[CAL][{tag}] human body '{human_body}' missing in init frame, keep JSON value.")
-                    continue
-                R_robot = R.from_matrix(tmp_data.xmat[bid].reshape(3, 3).copy())
-                quat = np.asarray(human_data_init[human_body][1])
-                R_human = R.from_quat(quat, scalar_first=True)
-                R_off = R_human.inv() * R_robot
-                rot_offsets_store[human_body] = R_off
-                if verbose:
-                    eh = R_human.as_euler('xyz', degrees=True)
-                    er = R_robot.as_euler('xyz', degrees=True)
-                    eo = R_off.as_euler('xyz', degrees=True)
-                    ej = R.from_quat(np.asarray(entry[4]), scalar_first=True).as_euler('xyz', degrees=True)
-                    def _fmt(e):
-                        return f"[{e[0]:+7.2f}, {e[1]:+7.2f}, {e[2]:+7.2f}]"
-                    print(f"[CAL][{tag}] {robot_body:26s} <- {human_body:14s} | "
-                          f"R_h={_fmt(eh)} R_r={_fmt(er)} off_auto={_fmt(eo)} off_json={_fmt(ej)} (deg, xyz)")
-
-        _calibrate(self.ik_match_table1, self.rot_offsets1, "Table1")
-        _calibrate(self.ik_match_table2, self.rot_offsets2, "Table2")
-
-
 
 
     def update_targets(self, human_data, offset_to_ground=False):
@@ -807,13 +747,96 @@ class GeneralMotionRetargeting:
                            f"Dist:{dist:.4f} (Limit:{current_limit:.3f}) | CenterDist:{c_dist:.4f}")
                     print(msg)
 
+    def _solve_ik(self, tasks, dt):
+        """Velocity from one IK QP solve. Routes through the soft-acceleration solver
+        when the accel limit is active, otherwise mink's standard hard-only solve."""
+        if self.accel_limit is not None:
+            return self._solve_ik_soft_accel(tasks, dt)
+        return mink.solve_ik(self.configuration, tasks, dt, self.solver,
+                             damping=self.damping, limits=self.ik_limits)
+
+    def _solve_ik_soft_accel(self, tasks, dt):
+        """Solve the IK QP with the acceleration limit injected as DAQP SOFT
+        constraints (sense=8). The hard rows (config / collision CBF / velocity / foot
+        limits in self.ik_limits) stay hard; the acceleration box rows are soft, so the
+        QP is always feasible and the accel bound is violated only (and minimally) where
+        it would otherwise conflict with a hard wall. Returns v = Δq/dt.
+
+        Mirrors mink.build_ik's objective/inequality assembly, then calls daqp directly
+        so the per-row constraint `sense` can be set (mink/qpsolvers expose no soft flag).
+        """
+        cfg = self.configuration
+        H, c = _compute_qp_objective(cfg, tasks, self.damping)
+        G_hard, h_hard = _compute_qp_inequalities(cfg, self.ik_limits, dt)
+        accel_cons = self.accel_limit.compute_qp_inequalities(cfg, dt)
+
+        G_list, h_list, sense_list = [], [], []
+        if G_hard is not None:
+            G_list.append(G_hard)
+            h_list.append(h_hard)
+            sense_list.append(np.zeros(h_hard.shape[0], dtype=c_int))      # 0 = hard
+        if not accel_cons.inactive:
+            G_list.append(accel_cons.G)
+            h_list.append(accel_cons.h)
+            sense_list.append(np.full(accel_cons.h.shape[0], 8, dtype=c_int))  # 8 = soft
+
+        nv = self.model.nv
+        if G_list:
+            A = np.ascontiguousarray(np.vstack(G_list))
+            bupper = np.ascontiguousarray(np.hstack(h_list))
+            blower = np.full(bupper.shape[0], -1e30)
+            sense = np.concatenate(sense_list)
+        else:
+            A = np.zeros((0, nv)); bupper = np.zeros(0); blower = np.zeros(0)
+            sense = np.zeros(0, dtype=c_int)
+
+        x, _obj, flag, _info = daqp.solve(
+            np.ascontiguousarray(H), np.ascontiguousarray(c),
+            A, bupper, blower, sense, rho_soft=self.accel_rho_soft,
+        )
+        if flag > 0:                       # 1 = optimal, 2 = soft-optimal (both solved)
+            return x / dt
+        # A soft accel constraint cannot by itself make the QP infeasible, so flag<=0
+        # means the HARD limits (config + collision) conflict on their own. Skip this
+        # iteration's update rather than crashing with NoSolutionFound.
+        if self.verbose:
+            print(f"[GMR][SoftAccel] DAQP exitflag={flag}: hard limits infeasible, "
+                  f"skipping IK update this iteration.")
+        return np.zeros(nv)
+
+    def _solve_ik_stages(self, dt, max_iter):
+        """Run the stage1 + stage2 IK convergence loops with the given iteration cap."""
+        if self.use_ik_match_table1 and len(self.tasks1_solver) > 0:
+            num_iter = 0
+            curr_error = self.error1()
+            while num_iter < max_iter:
+                vel1 = self._solve_ik(self.tasks1_solver, dt)
+                self.configuration.integrate_inplace(vel1, dt)
+                next_error = self.error1()
+                if abs(curr_error - next_error) < self.ik_tol:
+                    break
+                curr_error = next_error
+                num_iter += 1
+            self.log_collision_warning("Table1", num_iter)
+        if self.use_ik_match_table2 and len(self.tasks2_solver) > 0:
+            num_iter = 0
+            curr_error = self.error2()
+            while num_iter < max_iter:
+                vel2 = self._solve_ik(self.tasks2_solver, dt)
+                self.configuration.integrate_inplace(vel2, dt)
+                next_error = self.error2()
+                if abs(curr_error - next_error) < self.ik_tol:
+                    break
+                curr_error = next_error
+                num_iter += 1
+            self.log_collision_warning("Table2", num_iter)
+
     def retarget(self, human_data, offset_to_ground=False):
         self.update_targets(human_data, offset_to_ground)
         dt = self.configuration.model.opt.timestep
 
         if not self._warmup_done:
             for _ in range(self._warmup_iters):
-                # self.collision_barrier_task.update(self.configuration)
                 vel = mink.solve_ik(
                     self.configuration,
                     self.tasks1_solver,
@@ -829,59 +852,29 @@ class GeneralMotionRetargeting:
         if self.foot_contact_limit is not None:
             self.foot_contact_limit.update_from_human_motion(self.scaled_human_data)
 
-        if self.use_ik_match_table1 and len(self.tasks1_solver) > 0:
-            num_iter = 0
-            curr_error = self.error1()
+        # Acceleration limit: latch the frame-start pose and the previous frame's
+        # velocity so the limit bounds the NET frame velocity jump across all the
+        # inner IK iterations (see AccelerationLimit).
+        if self.accel_limit is not None:
+            self._accel_q_start = self.configuration.q.copy()
+            self.accel_limit.set_frame(self._accel_q_start, self._accel_v_prev)
 
-            while num_iter < self.max_iter:
-                # Recompute barrier rows at the current q before each IK QP solve
-                self.collision_barrier_task.update(self.configuration)
-                vel1 = mink.solve_ik(
-                    self.configuration,
-                    self.tasks1_solver,
-                    dt,
-                    self.solver,
-                    damping=self.damping,
-                    limits=self.ik_limits,
-                )
-                self.configuration.integrate_inplace(vel1, dt)
-                next_error = self.error1()
-
-                if abs(curr_error - next_error) < 1e-8:
-                    break
-                curr_error = next_error
-                num_iter += 1
-
-            self.log_collision_warning("Table1", num_iter)
-
-        if self.use_ik_match_table2 and len(self.tasks2_solver) > 0:
-            num_iter = 0
-            curr_error = self.error2()
-
-            while num_iter < self.max_iter:
-                self.collision_barrier_task.update(self.configuration)
-                vel2 = mink.solve_ik(
-                    self.configuration,
-                    self.tasks2_solver,
-                    dt,
-                    self.solver,
-                    damping=self.damping,
-                    limits=self.ik_limits,
-                )
-                self.configuration.integrate_inplace(vel2, dt)
-                next_error = self.error2()
-                if abs(curr_error - next_error) < 1e-8:
-                    break
-                curr_error = next_error
-                num_iter += 1
-
-            self.log_collision_warning("Table2", num_iter)
-            perf = {"stage": "Table2", "iter": num_iter}
+        # Normal IK solve with the configured iteration cap.
+        self._solve_ik_stages(dt, self.max_iter)
 
         mj.mj_fwdPosition(self.model, self.configuration.data)
         mj.mj_forward(self.model, self.configuration.data)
 
-        return self.configuration.data.qpos.copy()
+        # Store this frame's net joint velocity (q ⊖ q_frame_start)/dt for the next
+        # frame's acceleration limit.
+        if self.accel_limit is not None:
+            v_now = np.zeros(self.model.nv)
+            mj.mj_differentiatePos(self.model, v_now, dt, self._accel_q_start,
+                                   self.configuration.q)
+            self._accel_v_prev = v_now
+
+        qpos = self.configuration.data.qpos.copy()
+        return qpos
 
     def get_contact_point_positions(self) -> list:
         """Return [(world_pos, is_active), ...] for each foot contact point.
@@ -988,7 +981,7 @@ class GeneralMotionRetargeting:
     def offset_human_data_to_ground(self, human_data):
         """find the lowest point of the human data and offset the human data to the ground"""
         offset_human_data = {}
-        ground_offset = 0.1
+        ground_offset = self.ground_lift
         lowest_pos = np.inf
 
         for body_name in human_data.keys():

@@ -254,7 +254,7 @@
         "pelvis": [
             "Hips",
             100,
-            5,
+            100,
             [
                 0.0,
                 0.0,
@@ -301,7 +301,7 @@
         ],
         "left_ankle_roll_link": [
             "LeftFootMod",
-            50,
+            100,
             10,
             [
                 0.0,
@@ -349,7 +349,7 @@
         ],
         "right_ankle_roll_link": [
             "RightFootMod",
-            50,
+            100,
             10,
             [
                 0.0,
@@ -366,7 +366,7 @@
         "torso_link": [
             "Spine2",
             0,
-            10,
+            100,
             [
                 0.0,
                 0.0,
@@ -398,7 +398,7 @@
         "left_elbow_link": [
             "LeftForeArm",
             10,
-            5,
+            50,
             [
                 0.0,
                 0.0,
@@ -413,8 +413,8 @@
         ],
         "left_wrist_yaw_link": [
             "LeftHand",
+            0,
             10,
-            5,
             [
                 0.0,
                 0.0,
@@ -446,7 +446,7 @@
         "right_elbow_link": [
             "RightForeArm",
             10,
-            5,
+            50,
             [
                 0.0,
                 0.0,
@@ -461,8 +461,8 @@
         ],
         "right_wrist_yaw_link": [
             "RightHand",
+            0,
             10,
-            5,
             [
                 0.0,
                 0.0,

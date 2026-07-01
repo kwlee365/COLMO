@@ -116,3 +116,6 @@ yaml_to_flat_csv.py
 # assets/tocabi/
 
 compute_rotation.py
+
+# large local data (not part of the repo)
+amass/

@@ -97,9 +97,6 @@ if __name__ == "__main__":
     parser.add_argument("--tgt_fps", type=int, default=30)
     parser.add_argument("--no_axis_convert", action="store_true",
                         help="Skip Y-up -> Z-up conversion (use if npz is already Z-up).")
-    parser.add_argument("--scale_mode", choices=["table", "calib"], default="table",
-                        help="table: use the JSON human_scale_table. "
-                             "calib: LSQ-fit the scale table from SMPL frame 0.")
     args = parser.parse_args()
 
     smpl_frames, aligned_fps, actual_human_height = load_smpl_npz_frames(
@@ -108,15 +105,10 @@ if __name__ == "__main__":
     print(f"Loaded {len(smpl_frames)} frames at {aligned_fps:.2f} fps, "
           f"human height ~{actual_human_height:.3f} m")
 
-    # In "table" mode keep the runtime height ratio at 1.0 (actual_human_height=None)
-    # so the JSON human_scale_table is used verbatim, matching the BVH path. In
-    # "calib" mode the actual height is needed for the LSQ scale fit.
-    calibration_frame = smpl_frames[0] if args.scale_mode == "calib" else None
     retarget = GMR(
         actual_human_height=actual_human_height,
         src_human="smplx",
         tgt_robot=args.robot,
-        calibration_frame=calibration_frame,
     )
 
     robot_motion_viewer = RobotMotionViewer(
