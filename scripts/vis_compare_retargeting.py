@@ -237,7 +237,7 @@ def add_capsule(scene, from_pos, to_pos, radius, rgba):
     scene.ngeom += 1
 
 
-def resolve_robot_sources(args):
+def resolve_robot_sources(args, motion):
     """Return an ordered list of robot source dicts for the algorithms present."""
     results_dir = Path(args.results_dir)
     explicit = {"colmo": args.colmo_pkl, "gmr": args.gmr_pkl,
@@ -251,7 +251,7 @@ def resolve_robot_sources(args):
         if explicit[key] is not None:
             path = Path(explicit[key])
         else:
-            path = results_dir / spec["subdir"] / f"{args.motion}{spec['suffix']}.pkl"
+            path = results_dir / spec["subdir"] / f"{motion}{spec['suffix']}.pkl"
         if not path.exists():
             print(f"[yellow]{spec['label']}: {path} not found, skipping.[/yellow]")
             continue
@@ -318,7 +318,8 @@ def main():
                     "motions (COLMO / GMR / OmniRetarget) in one MuJoCo scene.")
     parser.add_argument("--motion", type=str, default="dance1_subject1",
                         help="Motion name (basename shared by the result pkls "
-                             "and the BVH file), e.g. dance1_subject1.")
+                             "and the BVH file), e.g. dance1_subject1. Use "
+                             "'all' to batch over every .bvh in --motion_dir.")
     parser.add_argument("--robot", type=str, default="unitree_g1",
                         choices=list(ROBOT_XML_DICT.keys()))
     parser.add_argument("--algos", nargs="+",
@@ -341,12 +342,12 @@ def main():
                         help="Do not draw the BVH human skeleton.")
 
     # Layout / playback.
-    parser.add_argument("--spacing", type=float, default=1.3,
+    parser.add_argument("--spacing", type=float, default=1.5,
                         help="Lateral gap (m) between adjacent characters.")
     parser.add_argument("--axis", choices=["x", "y"], default="y",
                         help="World axis the characters are lined up along.")
     parser.add_argument("--root_mode", choices=["lock", "recenter", "absolute"],
-                        default="recenter",
+                        default="lock",
                         help="How each character's horizontal root is placed. "
                              "lock: pinned to its lane every frame (in-place, "
                              "best for pose comparison); recenter: recentered on "
@@ -379,19 +380,97 @@ def main():
                              "names to disable.")
 
     # Camera.
-    parser.add_argument("--cam_distance", type=float, default=None)
+    parser.add_argument("--cam_distance", type=float, default=4.5)
     parser.add_argument("--cam_azimuth", type=float, default=None)
     parser.add_argument("--cam_elevation", type=float, default=-15.0)
     parser.add_argument("--no_follow_camera", action="store_true")
+    parser.add_argument("--lookat_shift", type=float, default=0.73,
+                        help="Slide the camera reference (lookat) point sideways "
+                             "in the image plane: positive = left, negative = "
+                             "right (meters). The scene appears to shift the "
+                             "opposite way.")
 
     # Video recording.
     parser.add_argument("--record_video", action="store_true")
-    parser.add_argument("--video_path", type=str, default="videos/compare.mp4")
+    parser.add_argument("--video_path", type=str, default=None,
+                        help="Output video path. Default: videos/<motion>.mp4, "
+                             "or videos/all.mp4 when --motion all.")
     parser.add_argument("--video_width", type=int, default=1280)
     parser.add_argument("--video_height", type=int, default=720)
+    parser.add_argument("--video_quality", type=int, default=8,
+                        help="Video compression quality (imageio/ffmpeg, 0-10; "
+                             "higher = less compression artifacts, bigger file).")
+    parser.add_argument("--msaa", type=int, default=8,
+                        help="Anti-aliasing samples for the render (MuJoCo "
+                             "offsamples). Higher = smoother edges. Try 8 or 16.")
+    parser.add_argument("--font_scale", type=int, default=150,
+                        choices=[50, 100, 150, 200, 250, 300],
+                        help="Label text size in the recorded video (MuJoCo "
+                             "font scale, percent). Larger = bigger labels. The "
+                             "live viewer always uses MuJoCo's default 150.")
 
     args = parser.parse_args()
 
+    # Default video name follows the motion: videos/<motion>.mp4, or
+    # videos/all.mp4 for a full batch (an explicit --video_path overrides this).
+    if args.video_path is None:
+        name = "all" if args.motion == "all" else args.motion
+        args.video_path = f"videos/{name}.mp4"
+
+    # Resolve which motions to compare. "--motion all" batches over every BVH
+    # basename found in --motion_dir; otherwise it is just the one motion.
+    if args.motion == "all":
+        motion_dir = Path(args.motion_dir)
+        motions = sorted(p.stem for p in motion_dir.glob("*.bvh"))
+        if not motions:
+            raise SystemError(f"No .bvh files found in {motion_dir}")
+        print(f"[cyan]Batch mode: {len(motions)} motions from "
+              f"{motion_dir}[/cyan]")
+    else:
+        motions = [args.motion]
+    batch = len(motions) > 1
+
+    # A single video for the whole run: every motion is appended back-to-back
+    # into args.video_path (one file, not one-per-motion).
+    mp4_writer = None
+    if args.record_video:
+        import os
+        import imageio
+        video_dir = os.path.dirname(args.video_path)
+        if video_dir and not os.path.exists(video_dir):
+            os.makedirs(video_dir)
+        # One fixed fps for the whole file (LAFAN1 is 30 fps throughout).
+        # quality raises the bitrate; macro_block_size=None keeps the exact
+        # requested resolution (no rounding up to a multiple of 16).
+        mp4_writer = imageio.get_writer(args.video_path,
+                                        fps=args.motion_fps or 30,
+                                        quality=args.video_quality,
+                                        macro_block_size=None)
+        print(f"[cyan]Recording {len(motions)} motion(s) into one file: "
+              f"{args.video_path}[/cyan]")
+
+    try:
+        for mi, motion in enumerate(motions):
+            if batch:
+                print(f"\n[bold cyan]=== [{mi + 1}/{len(motions)}] {motion} "
+                      f"===[/bold cyan]")
+            # --loop / --bvh_file name a single motion, so ignore them in batch.
+            run_comparison(args, motion, mp4_writer=mp4_writer,
+                           loop=args.loop and not batch,
+                           bvh_override=None if batch else args.bvh_file)
+    finally:
+        if mp4_writer is not None:
+            mp4_writer.close()
+            print(f"[cyan]Video saved to {args.video_path}[/cyan]")
+
+
+def run_comparison(args, motion, mp4_writer, loop, bvh_override):
+    """Render one motion's human + robot comparison (interactive and/or video).
+
+    ``mp4_writer`` is a shared, already-open imageio writer (or None): this
+    function only appends frames to it and never opens or closes it, so several
+    motions can be concatenated into one file by the caller.
+    """
     # Resolve the camera azimuth up front: it is both the viewer's azimuth and,
     # by default, the yaw the characters are turned to face (so they look at the
     # camera). Characters line up along y -> camera on the x-axis, and vice versa.
@@ -403,10 +482,19 @@ def main():
     target_yaw = np.deg2rad(args.face_yaw if args.face_yaw is not None
                             else cam_azimuth + 180.0)
 
+    # World-space vector pointing to the *left* of the image, so `--lookat_shift`
+    # can slide the camera's reference point sideways. The horizontal view
+    # direction is -(cos, sin) of the azimuth; screen-left = view x up.
+    _az = np.deg2rad(cam_azimuth)
+    _fwd = np.array([-np.cos(_az), -np.sin(_az), 0.0])
+    lookat_offset = np.cross(_fwd, [0.0, 0.0, 1.0]) * args.lookat_shift
+
     # --- Load robot motions -------------------------------------------------
-    sources = resolve_robot_sources(args)
+    sources = resolve_robot_sources(args, motion)
     if not sources:
-        raise SystemError("No robot motions found for the requested algorithms.")
+        print(f"[yellow]{motion}: no robot motions found for "
+              f"{args.algos}, skipping.[/yellow]")
+        return
 
     # Left-right mirror the requested algorithms (before facing alignment, so
     # the mirrored motion is then re-oriented to face the camera like the rest).
@@ -435,8 +523,8 @@ def main():
     # --- Load BVH human motion ---------------------------------------------
     human = None
     if not args.no_human:
-        bvh_path = Path(args.bvh_file) if args.bvh_file \
-            else Path(args.motion_dir) / f"{args.motion}.bvh"
+        bvh_path = Path(bvh_override) if bvh_override \
+            else Path(args.motion_dir) / f"{motion}.bvh"
         if bvh_path.exists():
             frames, height = load_bvh_file(str(bvh_path), format=args.format)
             raw = read_bvh(str(bvh_path))
@@ -554,6 +642,9 @@ def main():
 
     null_geom_names(model)
 
+    # Floor grid + lighting are defined in the robot scene XML (a flat floor and
+    # a directional light), so nothing extra is needed here.
+
     total_frames = max([s["n"] for s in sources]
                        + ([human["n"]] if human else []))
     motion_fps = args.motion_fps or sources[0]["fps"]
@@ -580,18 +671,13 @@ def main():
         viewer.cam.distance = max(3.0, args.spacing * ncol + 1.5)
     viewer.cam.azimuth = cam_azimuth
     viewer.cam.elevation = args.cam_elevation
-    viewer.cam.lookat[:] = np.zeros(3)
+    viewer.cam.lookat[:] = lookat_offset
 
     # --- Video recorder -----------------------------------------------------
+    # The writer is owned by the caller (shared across motions); here we only
+    # build this motion's offscreen renderer and append frames to it.
     renderer = None
-    mp4_writer = None
-    if args.record_video:
-        import os
-        import imageio
-        video_dir = os.path.dirname(args.video_path)
-        if video_dir and not os.path.exists(video_dir):
-            os.makedirs(video_dir)
-        mp4_writer = imageio.get_writer(args.video_path, fps=motion_fps)
+    if mp4_writer is not None:
         # MjSpec.attach does not carry over the child XML's <visual><global>
         # offscreen buffer size, so the composed model keeps MuJoCo's 640x480
         # default. mj.Renderer refuses any render larger than that buffer, so
@@ -600,9 +686,14 @@ def main():
                                          args.video_width)
         model.vis.global_.offheight = max(int(model.vis.global_.offheight),
                                           args.video_height)
+        # Anti-aliasing: MjSpec.attach drops the child <visual><quality>, so set
+        # the multisample count on the composed model before building the
+        # renderer (the renderer reads it when creating its GL context).
+        model.vis.quality.offsamples = max(int(model.vis.quality.offsamples),
+                                           args.msaa)
         renderer = mj.Renderer(model, height=args.video_height,
-                               width=args.video_width)
-        print(f"[cyan]Recording video to {args.video_path}[/cyan]")
+                               width=args.video_width,
+                               font_scale=mj.mjtFontScale(args.font_scale))
 
     def draw_overlays(scene):
         """Draw the human skeleton and floating algorithm labels into a scene."""
@@ -641,7 +732,10 @@ def main():
                 add_capsule(scene, wp(parent), wp(child), 0.012, HUMAN_BONE_COLOR)
             if not args.no_labels and "Head" in frame:
                 add_sphere(scene, wp("Head") + np.array([0, 0, 0.22]),
-                           0.05, HUMAN_LABEL_COLOR, label="BVH (human)")
+                           0.05, HUMAN_LABEL_COLOR,
+                           label=f"{motion}"
+                        #    label=f"BVH (human): {motion}"
+                           )
 
         # Floating algorithm labels above each robot head.
         if not args.no_labels:
@@ -673,7 +767,7 @@ def main():
             if not args.no_follow_camera:
                 centroid = np.mean([data.xpos[s["base_bid"]] for s in sources],
                                    axis=0)
-                viewer.cam.lookat[:] = centroid
+                viewer.cam.lookat[:] = centroid + lookat_offset
 
             # 3) Overlays (human skeleton + head labels).
             viewer.user_scn.ngeom = 0
@@ -689,7 +783,10 @@ def main():
                 draw_overlays(renderer.scene)
                 mp4_writer.append_data(renderer.render())
 
-            rate_limiter.sleep()
+            # Cap to real time only for live viewing; when recording, render as
+            # fast as possible (the mp4 fps is fixed) so batches finish quickly.
+            if renderer is None:
+                rate_limiter.sleep()
 
             if paused[0]:
                 continue
@@ -697,7 +794,7 @@ def main():
 
             cur_i += 1
             if cur_i >= total_frames:
-                if args.loop:
+                if loop:
                     cur_i = 0
                     pbar.reset()
                 else:
@@ -705,9 +802,10 @@ def main():
     finally:
         pbar.close()
         viewer.close()
-        if mp4_writer is not None:
-            mp4_writer.close()
-            print(f"[cyan]Video saved to {args.video_path}[/cyan]")
+        # Free this motion's GL renderer (the caller keeps the shared writer
+        # open so the next motion appends to the same file).
+        if renderer is not None:
+            renderer.close()
         time.sleep(0.3)
 
 
