@@ -17,6 +17,7 @@ setup(
     "mujoco",
     "numpy",
     "scipy",
+    "pyyaml",
     "qpsolvers[proxqp]",
     "rich",
     "tqdm",

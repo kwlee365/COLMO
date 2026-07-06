@@ -10,7 +10,7 @@ parameters:
   ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
-  ground_offset : -0.01     # per-frame robot ground offset [m] (apply_ground_offset)
+  ground_offset : -0.035     # per-frame robot ground offset [m] (apply_ground_offset)
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
   # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
@@ -28,47 +28,36 @@ parameters:
 groups:
   torso: ["Pelvis", "Chest", "Head"]
   torso_upper: ["Chest", "Head"]
-  
+
+  l_arm: ["Left_Upper_Arm", "Left_Forearm"]
+  r_arm: ["Right_Upper_Arm", "Right_Forearm"]
+  l_arm_lower: ["Left_Forearm"]
+  r_arm_lower: ["Right_Forearm"]
   l_arm_upper: ["Left_Upper_Arm"]
   r_arm_upper: ["Right_Upper_Arm"]
-  l_arm_lower: ["Left_Forearm", "Left_Elbow","Left_Hand1"]
-  r_arm_lower: ["Right_Forearm", "Right_Elbow", "Right_Hand1"]
-  
 
-  l_leg_upper: ["Left_Upper_Leg1"]
-  r_leg_upper: ["Right_Upper_Leg1"]
-  l_leg_lower: ["Left_Upper_Leg2","Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot"]
-  r_leg_lower: ["Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot"]
+  l_leg: ["Left_Upper_Leg", "Left_Lower_Leg", "Left_Foot"]
+  r_leg: ["Right_Upper_Leg", "Right_Lower_Leg", "Right_Foot"]
+  l_leg_lower: ["Left_Lower_Leg", "Left_Foot"]
+  r_leg_lower: ["Right_Lower_Leg", "Right_Foot"]
 
-  l_arm: ["Left_Upper_Arm", "Left_Forearm", "Left_Elbow","Left_Hand1"]
-  r_arm: ["Right_Upper_Arm", "Right_Forearm", "Right_Elbow", "Right_Hand1"]
-  l_arm_lower: ["Left_Forearm", "Left_Elbow","Left_Hand1"]
-  r_arm_lower: ["Right_Forearm", "Right_Elbow", "Right_Hand1"]
-  l_leg: ["Left_Upper_Leg1", "Left_Upper_Leg2", "Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot"]
-  r_leg: ["Right_Upper_Leg1", "Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot"]
   ground: ["floor"]
 
 
 collision_limits:
   - name: "body_general"
-    pairs: 
+    pairs:
       - ["l_leg", "r_leg"]
-      - ["l_arm", "l_leg"] 
+      - ["l_arm", "l_leg"]
       - ["l_arm", "r_leg"]
       - ["r_arm", "l_leg"]
       - ["r_arm", "r_leg"]
       - ["r_arm", "l_arm"]
       - ["l_arm_lower", "torso"]
       - ["r_arm_lower", "torso"]
-      # - ["l_leg_lower", "torso"]
-      # - ["r_leg_lower", "torso"]
-      # - ["r_leg_upper", "torso_upper"]
-      # - ["l_leg_upper", "torso_upper"]
-
     margin: 0.0
     detect_dist: 0.05
 
-  
   - name: "ground_collision"
     pairs:
       - ["l_arm", "ground"]
@@ -77,7 +66,7 @@ collision_limits:
       - ["l_leg", "ground"]
       - ["torso", "ground"]
     margin: 0.0
-    detect_dist: 0.05
+    detect_dist: 0.04
 
 
 # ── Foot contact zero-velocity constraint ─────────────────────────────────────
