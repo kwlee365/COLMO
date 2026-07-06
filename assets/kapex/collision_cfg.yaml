@@ -10,7 +10,7 @@ parameters:
   ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
-  ground_offset : -0.035     # per-frame robot ground offset [m] (apply_ground_offset)
+  ground_offset : -0.01    # per-frame robot ground offset [m] (apply_ground_offset)
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
   # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
@@ -23,7 +23,7 @@ parameters:
   acceleration_softness : 1.0e-6
 
   cbf_gain : 0.0015 # alpha = 1.5
-  issf_epsilon : 50.0
+  issf_epsilon : 600.0
 
 groups:
   torso: ["Pelvis", "Chest", "Head"]
@@ -66,7 +66,7 @@ collision_limits:
       - ["l_leg", "ground"]
       - ["torso", "ground"]
     margin: 0.0
-    detect_dist: 0.04
+    detect_dist: 0.05
 
 
 # ── Foot contact zero-velocity constraint ─────────────────────────────────────

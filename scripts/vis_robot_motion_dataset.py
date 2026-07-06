@@ -77,6 +77,11 @@ def run_batch_subprocess(robot_type: str, robot_motion_folder: str, video_dir: s
         base = os.path.splitext(motion_file)[0]
         out_mp4 = os.path.join(video_dir, f"{base}.mp4")
 
+        # Skip already-recorded videos so an interrupted batch can resume
+        if os.path.exists(out_mp4) and os.path.getsize(out_mp4) > 0:
+            print(f"Skip (already exists): {out_mp4}")
+            continue
+
         cmd = [
             sys.executable,
             os.path.abspath(__file__),

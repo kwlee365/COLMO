@@ -198,7 +198,7 @@
             <inertial pos="0.000979 0.006906 -0.13909" quat="0.71893 0.0256683 0.00799493 0.694562" mass="5.485" diaginertia="0.0419282 0.0405238 0.0155601"/>
             <joint name="left_hip_pitch_joint" pos="0 0 0" axis="0 1 0" class="actuator_RO100" range="-1.5708 0.5236" actuatorfrcrange="-300 300"/>
             <geom class="visual_geom" type="mesh" material="black" mesh="left_hip_pitch_link"/>
-            <geom name="Left_Upper_Leg" class="collision_geom" size="0.08 0.09" pos="0 0 -0.13" type="capsule"/>
+            <geom name="Left_Upper_Leg" class="collision_geom" size="0.08 0.15" pos="0 0 -0.17" type="capsule"/>
             <body name="left_hip_pitch_link_cover">
               <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
               <geom class="visual_geom" type="mesh" material="space_gray" mesh="left_hip_pitch_link_cover"/>
@@ -211,7 +211,7 @@
               <inertial pos="0.003115 0.001439 -0.095936" quat="0.682888 0.012063 0.0136948 0.730295" mass="4.891" diaginertia="0.0508695 0.0486603 0.00680726"/>
               <joint name="left_knee_joint" pos="0 0 0" axis="0 1 0" class="actuator_RO100" range="0 1.9199" actuatorfrcrange="-300 300"/>
               <geom class="visual_geom" type="mesh" material="black" mesh="left_knee_link"/>
-              <geom name="Left_Lower_Leg" class="collision_geom" size="0.06 0.08" pos="0 0 -0.2" type="capsule"/>
+              <geom name="Left_Lower_Leg" class="collision_geom" size="0.06 0.1" pos="0 0 -0.2" type="capsule"/>
               <body name="left_knee_link_cover">
                 <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
                 <geom class="visual_geom" type="mesh" material="space_gray" mesh="left_knee_link_cover"/>
@@ -231,7 +231,7 @@
                     <joint name="left_toe_pitch_joint" pos="0 0 0" axis="0 1 0" class="actuator_RI60" range="-1.0472 0.34907" actuatorfrcrange="-20 20"/>
                     <geom class="visual_geom" type="mesh" material="black" mesh="left_toe_pitch_link"/>
                     <!-- <geom class="collision_geom" type="mesh" mesh="left_toe_pitch_collision_link"/> -->
-                         <geom name="Left_Foot" class="collision_geom" size="0.045 0.085" pos="-0.045 0 0.018" quat="0.707107 0 0.707107 0" type="capsule"/> -->
+                         <!-- <geom name="Left_Foot" class="collision_geom" size="0.045 0.085" pos="-0.045 0 0.018" quat="0.707107 0 0.707107 0" type="capsule"/> -->
 
 
                     <body name="left_toe_pitch_link_cover">
@@ -263,7 +263,7 @@
             <inertial pos="0.0009793 -0.006908 -0.13908" quat="0.694405 0.00805444 0.0256138 0.719083" mass="5.485" diaginertia="0.041926 0.0405207 0.0155593"/>
             <joint name="right_hip_pitch_joint" pos="0 0 0" axis="0 1 0" class="actuator_RO100" range="-1.5708 0.5236" actuatorfrcrange="-300 300"/>
             <geom class="visual_geom" type="mesh" material="black" mesh="right_hip_pitch_link"/>
-            <geom name="Right_Upper_Leg" class="collision_geom" size="0.08 0.09" pos="0 0 -0.13" type="capsule"/>
+            <geom name="Right_Upper_Leg" class="collision_geom" size="0.08 0.15" pos="0 0 -0.17" type="capsule"/>
             <body name="right_hip_pitch_link_cover">
               <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
               <geom class="visual_geom" type="mesh" material="space_gray" mesh="right_hip_pitch_link_cover"/>
@@ -276,7 +276,7 @@
               <inertial pos="0.003116 0.002172 -0.095939" quat="0.730266 0.0136982 0.0120677 0.682919" mass="4.891" diaginertia="0.0508704 0.0486624 0.00680722"/>
               <joint name="right_knee_joint" pos="0 0 0" axis="0 1 0" class="actuator_RO100" range="0 1.9199" actuatorfrcrange="-300 300"/>
               <geom class="visual_geom" type="mesh" material="black" mesh="right_knee_link"/>
-              <geom name="Right_Lower_Leg" class="collision_geom" size="0.06 0.08" pos="0 0 -0.2" type="capsule"/>
+              <geom name="Right_Lower_Leg" class="collision_geom" size="0.06 0.1" pos="0 0 -0.2" type="capsule"/>
               <body name="right_knee_link_cover">
                 <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
                 <geom class="visual_geom" type="mesh" material="space_gray" mesh="right_knee_link_cover"/>
@@ -296,7 +296,7 @@
                     <joint name="right_toe_pitch_joint" pos="0 0 0" axis="0 1 0" class="actuator_RI60" range="-1.0472 0.34907" actuatorfrcrange="-20 20"/>
                     <geom class="visual_geom" type="mesh" material="black" mesh="right_toe_pitch_link"/>
                     <!-- <geom class="collision_geom" type="mesh" mesh="right_toe_pitch_collision_link"/> -->
-                         <geom name="Right_Foot" class="collision_geom" size="0.045 0.085" pos="-0.045 0 0.018" quat="0.707107 0 0.707107 0" type="capsule"/> -->
+                         <!-- <geom name="Right_Foot" class="collision_geom" size="0.045 0.085" pos="-0.045 0 0.018" quat="0.707107 0 0.707107 0" type="capsule"/> -->
 
                     <body name="right_toe_pitch_link_cover">
                       <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
@@ -540,12 +540,12 @@
     <global azimuth="-140" elevation="-20"/>
   </visual>
   <asset>
-    <texture type="skybox" builtin="flat" rgb1="0 0 0" rgb2="0 0 0" width="512" height="3072"/>
-    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
-    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800"/>
+    <texture type="2d" name="groundplane" builtin="flat" mark="none" rgb1="1 1 1" rgb2="1 1 1" markrgb="0 0 0" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0"/>
   </asset>
   <worldbody>
-    <light pos="1 0 3.5" dir="0 0 -1" directional="true"/>
-    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+    <light diffuse=".5 .5 .5" pos="-3 -3 5" dir="3 3 -5" castshadow="true"/>
+    <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" rgba="0.79216 0.81961 0.93333 0.5"/>
   </worldbody>
 </mujoco>
