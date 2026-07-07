@@ -110,8 +110,41 @@ class KinematicsModel:
         compiler_data = xml_doc_root.find("compiler")
         self._rot_unit = compiler_data.attrib.get("angle", "degree")
         assert self._rot_unit in ["degree", "radian"], f"Invalid rotation unit: {self._rot_unit}"
-        
-        def _add_xml_body(xml_node, parent_index, body_index):
+
+        # Resolve MuJoCo <default> classes so joints that inherit axis/range via
+        # class= / childclass= (e.g. go2's leg joints) parse correctly, not only
+        # joints that write axis/range explicitly (e.g. g1/h1/kapex). The map keys
+        # are class names (None for the top-level classless default); values are the
+        # inherited-then-overridden <joint> attribs for that class.
+        default_joint_attribs = {}
+
+        def _walk_defaults(node, inherited):
+            attribs = dict(inherited)
+            joint_el = node.find("joint")
+            if joint_el is not None:
+                attribs.update(joint_el.attrib)
+            default_joint_attribs[node.attrib.get("class")] = attribs
+            for child in node.findall("default"):
+                _walk_defaults(child, attribs)
+
+        top_default = xml_doc_root.find("default")
+        if top_default is not None:
+            _walk_defaults(top_default, {})
+
+        def _resolve_joint_attr(joint_el, attr, childclass):
+            # Explicit attribute on the joint wins; otherwise fall back to the joint's
+            # class= (or the inherited childclass=), then the top-level default.
+            val = joint_el.attrib.get(attr)
+            if val is not None:
+                return val
+            cls = joint_el.attrib.get("class", childclass)
+            resolved = default_joint_attribs.get(cls)
+            if resolved is not None and attr in resolved:
+                return resolved[attr]
+            return default_joint_attribs.get(None, {}).get(attr)
+
+        def _add_xml_body(xml_node, parent_index, body_index, childclass=None):
+            childclass = xml_node.attrib.get("childclass", childclass)
             body_name = xml_node.attrib.get("name")
             pos_data = xml_node.attrib.get("pos", "0 0 0")
             pos = np.fromstring(pos_data, dtype=float, sep=" ")
@@ -130,17 +163,17 @@ class KinematicsModel:
                 if num_joints == 0:
                     curr_joint = Joint(name=body_name, dof_dim=0, axis=None)
                 elif num_joints == 1:
-                    _axis = np.fromstring(curr_joints[0].attrib.get("axis"), dtype=float, sep=" ")
+                    _axis = np.fromstring(_resolve_joint_attr(curr_joints[0], "axis", childclass), dtype=float, sep=" ")
                     axis = torch.from_numpy(_axis).to(self._device)
                     curr_joint = Joint(name=body_name, dof_dim=1, axis=axis)
-                    _dof_limits = np.fromstring(curr_joints[0].attrib.get("range"), dtype=float, sep=" ")
+                    _dof_limits = np.fromstring(_resolve_joint_attr(curr_joints[0], "range", childclass), dtype=float, sep=" ")
                     self._dof_lower_limits.append(_dof_limits[0])
                     self._dof_upper_limits.append(_dof_limits[1])
                 elif num_joints == 3:
                     axis = None
                     curr_joint = Joint(name=body_name, dof_dim=3, axis=axis)
                     for joint in curr_joints:
-                        _dof_limits = np.fromstring(joint.attrib.get("range"), dtype=float, sep=" ")
+                        _dof_limits = np.fromstring(_resolve_joint_attr(joint, "range", childclass), dtype=float, sep=" ")
                         self._dof_lower_limits.append(_dof_limits[0])
                         self._dof_upper_limits.append(_dof_limits[1])
                 else:
@@ -156,10 +189,10 @@ class KinematicsModel:
             curr_index = body_index
             body_index += 1
             for child in xml_node.findall("body"):
-                body_index = _add_xml_body(child, curr_index, body_index)
-                
+                body_index = _add_xml_body(child, curr_index, body_index, childclass)
+
             return body_index
-        
+
         _add_xml_body(xml_body_root, -1, 0)
         
     def _set_dof_indices(self):

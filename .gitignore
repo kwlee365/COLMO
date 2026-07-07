@@ -50,7 +50,7 @@ assets/body_models/
 *.wmv
 *.flv
 *.webm
-
+*.npz
 # Archives
 *.zip
 *.tar

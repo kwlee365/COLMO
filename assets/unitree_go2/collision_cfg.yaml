@@ -1,0 +1,112 @@
+# Go2 quadruped collision / IK-solver config for GeneralMotionRetargeting.
+#
+# Retargeting semantics for this robot: the FRONT legs track the human ARMS and
+# the REAR legs track the human LEGS. So the collision groups below are named in
+# body terms: front-left/right leg == l_arm/r_arm, rear-left/right leg == l_leg/
+# r_leg, the two FRONT paws are the "hands" and the two REAR paws are the "feet".
+#
+# The named geoms referenced here were added to go2.xml (see that file):
+#   Trunk, Trunk_front, Trunk_nose                              (base_link)
+#   {FL,FR,RL,RR}_hip_col                                       (hip link)
+#   {FL,FR,RL,RR}_thigh_col                                     (thigh link)
+#   {FL,FR,RL,RR}_calf_col, {FL,FR,RL,RR}_calf_col2             (calf link)
+#   FL, FR (front paws = hands),  RL, RR (rear paws = feet)     (foot spheres)
+parameters:
+  # REQUIRED (no code default): construction raises if any of these is missing.
+  damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
+  max_iter: 10              # IK iterations per frame
+  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
+  # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
+  solver : daqp             # QP backend passed to mink.solve_ik
+  warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
+  ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
+  lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
+  motion_fps : 30           # frame rate assumed for the foot-contact threshold
+  # Go2 stands ~0.30 m tall; the leg targets come from the (heavily down-scaled)
+  # human, so no extra ground lift is applied. Tune per source if the base sits
+  # too high/low relative to the floor.
+  ground_offset : 0.0       # per-frame robot ground offset [m] (apply_ground_offset)
+  # Per-frame joint-acceleration cap (SOFT QP constraint). Enabling this routes the
+  # IK solve through the DAQP soft path, which YIELDS on an infeasible frame instead
+  # of raising NoSolutionFound. That is what keeps the HARD collision CBF below from
+  # ever crashing the solve on this extreme front-legs==arms mapping (same setup
+  # KAPEX uses); it also smooths the motion.
+  acceleration_limit : 300000
+  acceleration_softness : 1.0e-6
+  # Collision-avoidance mode: "cbf" | "issf" | "off". ENABLED (issf).
+  # NOTE: quote the value — bare off is parsed as YAML boolean false.
+  collision_mode : "issf"
+  cbf_gain : 0.0015         # CBF rate (hard-constraint path)
+  issf_epsilon : 20.0       # ISSf robustness scale (larger -> milder margin)
+
+groups:
+  # ── Trunk ──
+  trunk: ["Trunk1", "Trunk2", "Trunk_front", "Trunk_nose"]
+
+  # ── FRONT legs == ARMS (front paws FL/FR are the "hands") ──
+  l_arm: ["FL_thigh_col", "FL_calf_col", "FL_calf_col2", "FL"]
+  r_arm: ["FR_thigh_col", "FR_calf_col", "FR_calf_col2", "FR"]
+  l_arm_lower: ["FL_calf_col", "FL_calf_col2", "FL"]
+  r_arm_lower: ["FR_calf_col", "FR_calf_col2", "FR"]
+
+  # ── REAR legs == LEGS (rear paws RL/RR are the "feet") ──
+  l_leg: ["RL_hip_col", "RL_thigh_col", "RL_calf_col", "RL_calf_col2", "RL"]
+  r_leg: ["RR_hip_col", "RR_thigh_col", "RR_calf_col", "RR_calf_col2", "RR"]
+  l_leg_lower: ["RL_calf_col", "RL_calf_col2", "RL"]
+  r_leg_lower: ["RR_calf_col", "RR_calf_col2", "RR"]
+
+  # ── Hands vs feet kept as SEPARATE groups ──
+  hands: ["FL", "FR"]      # front paws  -> human hands
+  feet:  ["RL", "RR"]      # rear paws   -> human feet
+
+  ground: ["floor"]
+
+collision_limits:
+  # Self-collision between the four legs (they should never cross).
+  - name: "leg_self"
+    pairs:
+      - ["l_arm", "r_arm"]    # front-left  <-> front-right
+      - ["l_leg", "r_leg"]    # rear-left   <-> rear-right
+      - ["l_arm", "l_leg"]    # left side   (front <-> rear)
+      - ["r_arm", "r_leg"]    # right side  (front <-> rear)
+      - ["l_arm", "r_leg"]    # diagonals
+      - ["r_arm", "l_leg"]
+    margin: 0.0
+    detect_dist: 0.04
+
+  # Keep the WHOLE robot off the floor: every leg link (thigh/calf/paw) + trunk.
+  # l_arm/r_arm already include the front paws (hands); l_leg/r_leg include the rear
+  # paws (feet), so this also covers what the old feet/hands pairs did.
+  - name: "ground_collision"
+    pairs:
+      - ["l_arm", "ground"]   # front-left leg  (arm): thigh + calf + hand
+      - ["r_arm", "ground"]   # front-right leg (arm)
+      - ["l_leg", "ground"]   # rear-left leg:  thigh + calf + foot
+      - ["r_leg", "ground"]   # rear-right leg
+      - ["trunk", "ground"]
+    margin: 0.0
+    detect_dist: 0.03
+
+# ── Foot geoms: used to compute the per-frame robot ground offset (lowest foot) ──
+# For this mapping only the REAR paws act as feet, so the ground reference uses
+# them (the front paws follow the arms and are usually off the ground).
+foot_geoms:
+  left:
+    - RL
+  right:
+    - RR
+
+# ── Foot contact zero-velocity constraint ─────────────────────────────────────
+# Disabled (mirrors G1/KAPEX defaults). The contact-point body_name must be a
+# robot BODY that also appears in the IK match table so its paired human body can
+# be derived. For Go2 the "feet" are the rear paws -> RL_foot / RR_foot.
+foot_contact:
+  enabled: false
+  threshold: 0.3        # m/s — contact activates when human foot speed <= this
+  velocity_bound: 0.001 # m/s — hard XY velocity limit once in contact
+
+  contact_points:
+    - body_name: "RL_foot"
+      local_pos: [0.0, 0.0, 0.0]
+    - body_name: "RR_foot"
+      local_pos: [0.0, 0.0, 0.0]

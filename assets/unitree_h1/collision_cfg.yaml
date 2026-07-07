@@ -1,0 +1,103 @@
+# Robot body group definitions and self-collision limit parameters (Unitree H1).
+# Group entries below reference the NAMED sphere/capsule collision geoms defined
+# in h1.xml (all collision geoms are spheres/capsules; no mesh/box/cylinder).
+parameters:
+  # REQUIRED (no code default): construction raises if any of these is missing.
+  damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
+  max_iter: 10              # IK iterations per frame
+  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
+  # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
+  solver : daqp             # QP backend passed to mink.solve_ik
+  warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
+  ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
+  lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
+  motion_fps : 30           # frame rate assumed for the foot-contact threshold
+  ground_offset : 0.0    # per-frame robot ground offset [m] (apply_ground_offset)
+  # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
+  collision_mode : issf
+  # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
+  # Applied as a SOFT QP constraint (DAQP sense=8): honoured when feasible, yields
+  # minimally to the hard collision CBF / joint limits so the QP never goes infeasible.
+  # Comment out / set <=0 to disable.
+  acceleration_limit : 300000
+  # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
+  # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
+  acceleration_softness : 1.0e-6
+
+  cbf_gain : 0.0015 # alpha = 1.5
+  issf_epsilon : 100.0
+
+# ── Collision geom groups ─────────────────────────────────────────────────────
+# Names below must match the `name=` of the sphere/capsule collision geoms in
+# h1.xml. H1 has no separate head link, so the torso group covers pelvis + trunk.
+groups:
+  torso: ["Pelvis", "Torso", "Head"]
+  torso_upper: ["Torso", "Head"]
+
+  l_arm: ["Left_Shoulder_Roll", "Left_Upper_Arm", "Left_Forearm"]
+  r_arm: ["Right_Shoulder_Roll", "Right_Upper_Arm", "Right_Forearm"]
+  l_arm_lower: ["Left_Forearm"]
+  r_arm_lower: ["Right_Forearm"]
+  l_arm_upper: ["Left_Upper_Arm"]
+  r_arm_upper: ["Right_Upper_Arm"]
+
+  l_leg: ["Left_Hip_Roll", "Left_Thigh", "Left_Shin", "Left_Foot"]
+  r_leg: ["Right_Hip_Roll", "Right_Thigh", "Right_Shin", "Right_Foot"]
+  l_leg_lower: ["Left_Shin", "Left_Foot"]
+  r_leg_lower: ["Right_Shin", "Right_Foot"]
+  l_leg_upper: ["Left_Hip_Roll", "Left_Thigh"]
+  r_leg_upper: ["Right_Hip_Roll", "Right_Thigh"]
+
+  ground: ["floor"]
+
+
+collision_limits:
+  - name: "body_general"
+    pairs:
+      - ["l_leg", "r_leg"]
+      - ["l_arm", "l_leg"]
+      - ["l_arm", "r_leg"]
+      - ["r_arm", "l_leg"]
+      - ["r_arm", "r_leg"]
+      - ["r_arm", "l_arm"]
+      - ["l_arm_lower", "torso"]
+      - ["r_arm_lower", "torso"]
+    margin: 0.0
+    detect_dist: 0.05
+
+  - name: "ground_collision"
+    pairs:
+      - ["l_arm", "ground"]
+      - ["r_arm", "ground"]
+      - ["r_leg", "ground"]
+      - ["l_leg", "ground"]
+      - ["torso", "ground"]
+    margin: 0.0
+    detect_dist: 0.05
+
+
+# ── Foot contact zero-velocity constraint ─────────────────────────────────────
+# Contact detection is based on human motion position difference per frame:
+#   delta = ||human_pos_t - human_pos_{t-1}||
+# If delta <= threshold * dt  (i.e. human foot speed <= threshold),
+# a hard QP inequality pins the robot foot XY velocity to <= velocity_bound.
+# threshold is in m/s; velocity_bound is in m/s.
+# human_body_name is derived automatically from the IK config (format-agnostic).
+# ──────────────────────────────────────────────────────────────────────────────
+foot_geoms:
+  left:
+    - Left_Foot
+  right:
+    - Right_Foot
+
+foot_contact:
+  enabled: false
+  threshold: 0.3   # m/s (1 cm/s) — contact activates when human foot speed <= this
+  velocity_bound: 0.001 # m/s  — hard XY velocity limit once in contact
+
+  contact_points:
+    - body_name: "left_ankle_link"
+      local_pos: [0.02, 0.0, -0.02]
+
+    - body_name: "right_ankle_link"
+      local_pos: [0.02, 0.0, -0.02]

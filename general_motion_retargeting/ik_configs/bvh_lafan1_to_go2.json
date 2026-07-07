@@ -1,0 +1,444 @@
+{
+    "_comment": "LAFAN1 -> Unitree Go2 UPRIGHT biped. arms->front legs, legs->rear legs, spine->body VERTICAL (base rot_offset [-0.707107,-0.707107,0,0]). scales root 0.64/arms 0.55/legs 0.60. BOTH front legs (arms) AND rear legs (legs) now track thigh+calf by ORIENTATION (posW=0); only the paws (FL/FR/RL/RR_foot) keep POSITION. Front-leg rot_offsets calibrated (frame0 of walk1_subject2) by R_human^-1*R_robot from the position-only solve; rear-leg offsets from the original symmetric reference. This stops the front legs from collapsing into each other/the trunk (the main Go2 self-collision source). go2 knee range widened to [-2.9,2.9]. root raised 0.60->0.64 for the 0.022 foot-sphere radius.",
+    "robot_root_name": "base_link",
+    "human_root_name": "Hips",
+    "ground_height": 0.0,
+    "human_height_assumption": 1.75,
+    "use_ik_match_table1": true,
+    "use_ik_match_table2": true,
+    "human_scale_table": {
+        "Hips": 0.64,
+        "LeftArm": 0.55,
+        "LeftForeArm": 0.55,
+        "LeftHand": 0.55,
+        "RightArm": 0.55,
+        "RightForeArm": 0.55,
+        "RightHand": 0.55,
+        "LeftUpLeg": 0.6,
+        "LeftLeg": 0.6,
+        "LeftFootMod": 0.6,
+        "RightUpLeg": 0.6,
+        "RightLeg": 0.6,
+        "RightFootMod": 0.6
+    },
+    "ik_match_table1": {
+        "base_link": [
+            "Hips",
+            100,
+            50,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.707107,
+                -0.707107,
+                0.0,
+                0.0
+            ]
+        ],
+        "FL_thigh": [
+            "LeftArm",
+            0,
+            12,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.63552008,
+                0.01822322,
+                0.75467415,
+                0.16201563
+            ]
+        ],
+        "FL_calf": [
+            "LeftForeArm",
+            0,
+            10,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.71420236,
+                -0.18410488,
+                0.67457747,
+                0.03107452
+            ]
+        ],
+        "FL_foot": [
+            "LeftHand",
+            20,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "FR_thigh": [
+            "RightArm",
+            0,
+            12,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.11354622,
+                -0.67675272,
+                0.28391233,
+                0.6697065
+            ]
+        ],
+        "FR_calf": [
+            "RightForeArm",
+            0,
+            10,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.28999645,
+                -0.57875667,
+                0.17484977,
+                0.74186948
+            ]
+        ],
+        "FR_foot": [
+            "RightHand",
+            20,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "RL_thigh": [
+            "LeftUpLeg",
+            0,
+            12,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.484665,
+                0.462227,
+                0.570523,
+                -0.475342
+            ]
+        ],
+        "RL_calf": [
+            "LeftLeg",
+            0,
+            10,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.51643,
+                0.491621,
+                0.529722,
+                -0.45935
+            ]
+        ],
+        "RL_foot": [
+            "LeftFootMod",
+            20,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "RR_thigh": [
+            "RightUpLeg",
+            0,
+            12,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.460617,
+                -0.465442,
+                -0.509546,
+                0.558174
+            ]
+        ],
+        "RR_calf": [
+            "RightLeg",
+            0,
+            10,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.44328,
+                -0.554411,
+                -0.466044,
+                0.528143
+            ]
+        ],
+        "RR_foot": [
+            "RightFootMod",
+            20,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ]
+    },
+    "ik_match_table2": {
+        "base_link": [
+            "Hips",
+            100,
+            20,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.707107,
+                -0.707107,
+                0.0,
+                0.0
+            ]
+        ],
+        "FL_thigh": [
+            "LeftArm",
+            0,
+            30,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.63552008,
+                0.01822322,
+                0.75467415,
+                0.16201563
+            ]
+        ],
+        "FL_calf": [
+            "LeftForeArm",
+            0,
+            25,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.71420236,
+                -0.18410488,
+                0.67457747,
+                0.03107452
+            ]
+        ],
+        "FL_foot": [
+            "LeftHand",
+            50,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "FR_thigh": [
+            "RightArm",
+            0,
+            30,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.11354622,
+                -0.67675272,
+                0.28391233,
+                0.6697065
+            ]
+        ],
+        "FR_calf": [
+            "RightForeArm",
+            0,
+            25,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.28999645,
+                -0.57875667,
+                0.17484977,
+                0.74186948
+            ]
+        ],
+        "FR_foot": [
+            "RightHand",
+            50,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "RL_thigh": [
+            "LeftUpLeg",
+            0,
+            30,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.484665,
+                0.462227,
+                0.570523,
+                -0.475342
+            ]
+        ],
+        "RL_calf": [
+            "LeftLeg",
+            0,
+            25,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                -0.51643,
+                0.491621,
+                0.529722,
+                -0.45935
+            ]
+        ],
+        "RL_foot": [
+            "LeftFootMod",
+            50,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "RR_thigh": [
+            "RightUpLeg",
+            0,
+            30,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.460617,
+                -0.465442,
+                -0.509546,
+                0.558174
+            ]
+        ],
+        "RR_calf": [
+            "RightLeg",
+            0,
+            25,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.44328,
+                -0.554411,
+                -0.466044,
+                0.528143
+            ]
+        ],
+        "RR_foot": [
+            "RightFootMod",
+            50,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ]
+    }
+}

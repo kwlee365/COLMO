@@ -1,0 +1,210 @@
+{
+    "_comment": "SMPL-X -> Unitree Go2 (quadruped) as an UPRIGHT biped: human arms -> front legs, human legs -> rear legs, spine -> go2 body held VERTICAL so it walks on its hind legs. base rot_offset [0,0.707107,0.707107,0] tilts the go2 nose up. Same design as bvh_lafan1_to_go2.json; the orientation was derived by composing the horizontal base offset with a 270deg body-pitch. If the nose comes out tilted for SMPL-X data, retune this quaternion. go2_mocap.xml has widened joint limits so the hind knees can straighten into this pose.",
+    "robot_root_name": "base_link",
+    "human_root_name": "pelvis",
+    "ground_height": 0.0,
+    "human_height_assumption": 1.8,
+    "use_ik_match_table1": true,
+    "use_ik_match_table2": true,
+    "human_scale_table": {
+        "pelvis": 0.55,
+        "left_shoulder": 0.55,
+        "left_elbow": 0.55,
+        "left_wrist": 0.55,
+        "right_shoulder": 0.55,
+        "right_elbow": 0.55,
+        "right_wrist": 0.55,
+        "left_hip": 0.60,
+        "left_knee": 0.60,
+        "left_foot": 0.60,
+        "right_hip": 0.60,
+        "right_knee": 0.60,
+        "right_foot": 0.60
+    },
+    "ik_match_table1": {
+        "base_link": [
+            "pelvis",
+            100,
+            50,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.707107, 0.707107, 0.0]
+        ],
+        "FL_thigh": [
+            "left_shoulder",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FL_calf": [
+            "left_elbow",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FL_foot": [
+            "left_wrist",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FR_thigh": [
+            "right_shoulder",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FR_calf": [
+            "right_elbow",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FR_foot": [
+            "right_wrist",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RL_thigh": [
+            "left_hip",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RL_calf": [
+            "left_knee",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RL_foot": [
+            "left_foot",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RR_thigh": [
+            "right_hip",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RR_calf": [
+            "right_knee",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RR_foot": [
+            "right_foot",
+            20,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ]
+    },
+    "ik_match_table2": {
+        "base_link": [
+            "pelvis",
+            100,
+            20,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.707107, 0.707107, 0.0]
+        ],
+        "FL_thigh": [
+            "left_shoulder",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FL_calf": [
+            "left_elbow",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FL_foot": [
+            "left_wrist",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FR_thigh": [
+            "right_shoulder",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FR_calf": [
+            "right_elbow",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "FR_foot": [
+            "right_wrist",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RL_thigh": [
+            "left_hip",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RL_calf": [
+            "left_knee",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RL_foot": [
+            "left_foot",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RR_thigh": [
+            "right_hip",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RR_calf": [
+            "right_knee",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ],
+        "RR_foot": [
+            "right_foot",
+            50,
+            0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0]
+        ]
+    }
+}

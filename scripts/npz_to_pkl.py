@@ -3,10 +3,14 @@ Convert a holosoma-generated .npz motion file into the GMR .pkl format
 so it can be visualized with `scripts/vis_robot_motion.py`.
 
 Holosoma npz layout (e.g. holosoma/lafan/*.npz):
-    qpos:         (N, 36) float64   # MuJoCo qpos for unitree_g1: [pos(3), quat_wxyz(4), dof(29)]
+    qpos:         (N, 7 + n_dof) float64   # MuJoCo qpos: [pos(3), quat_wxyz(4), dof(n_dof)]
     human_joints: (N, 22, 3) float64
     fps:          () int64
     cost:         () float64
+
+The number of DOF depends on the robot (unitree_g1: 29 -> qpos (N, 36);
+kapex: 33 -> qpos (N, 40)). The conversion itself is robot-agnostic slicing;
+pass --robot to validate the qpos width against the target robot model.
 
 GMR pkl layout (see scripts/bvh_to_robot.py and data_loader.py):
     fps:            int
@@ -25,7 +29,22 @@ from pathlib import Path
 import numpy as np
 
 
-def convert_one(npz_path: str, pkl_path: str) -> None:
+def get_robot_n_dof(robot: str) -> int:
+    """Return the number of actuated DOF (qpos width minus the 7-dof free base)
+    for a registered robot, by loading its MuJoCo model."""
+    import mujoco
+
+    from general_motion_retargeting.params import ROBOT_XML_DICT
+
+    if robot not in ROBOT_XML_DICT:
+        raise ValueError(
+            f"Unknown robot '{robot}'. Choices: {sorted(ROBOT_XML_DICT.keys())}"
+        )
+    model = mujoco.MjModel.from_xml_path(str(ROBOT_XML_DICT[robot].resolve()))
+    return model.nq - 7
+
+
+def convert_one(npz_path: str, pkl_path: str, expected_n_dof: int = None) -> None:
     data = np.load(npz_path, allow_pickle=True)
 
     qpos = data["qpos"]
@@ -34,6 +53,13 @@ def convert_one(npz_path: str, pkl_path: str) -> None:
     if qpos.ndim != 2 or qpos.shape[1] < 7:
         raise ValueError(
             f"Unexpected qpos shape {qpos.shape} in {npz_path}; expected (N, >=7)."
+        )
+
+    n_dof = qpos.shape[1] - 7
+    if expected_n_dof is not None and n_dof != expected_n_dof:
+        raise ValueError(
+            f"qpos in {npz_path} has {n_dof} dof (shape {qpos.shape}), but the target "
+            f"robot expects {expected_n_dof} dof. Check that --robot matches the npz."
         )
 
     root_pos = qpos[:, :3].astype(np.float64)
@@ -75,14 +101,25 @@ def main():
             "this is the output directory (default: same directory, .pkl alongside .npz)."
         ),
     )
+    parser.add_argument(
+        "--robot",
+        type=str,
+        default=None,
+        help=(
+            "Target robot name (e.g. unitree_g1, kapex). If given, the qpos width in "
+            "each npz is validated against that robot's expected DOF count."
+        ),
+    )
     args = parser.parse_args()
+
+    expected_n_dof = get_robot_n_dof(args.robot) if args.robot else None
 
     src = Path(args.npz_path)
     if src.is_file():
         if src.suffix != ".npz":
             raise ValueError(f"Expected a .npz file, got {src}")
         dst = Path(args.save_path) if args.save_path else src.with_suffix(".pkl")
-        convert_one(str(src), str(dst))
+        convert_one(str(src), str(dst), expected_n_dof)
     elif src.is_dir():
         out_dir = Path(args.save_path) if args.save_path else src
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -90,7 +127,7 @@ def main():
         if not npz_files:
             raise FileNotFoundError(f"No .npz files found in {src}")
         for f in npz_files:
-            convert_one(str(f), str(out_dir / (f.stem + ".pkl")))
+            convert_one(str(f), str(out_dir / (f.stem + ".pkl")), expected_n_dof)
     else:
         raise FileNotFoundError(f"{src} does not exist")
 

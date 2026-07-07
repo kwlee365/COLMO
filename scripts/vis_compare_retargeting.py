@@ -613,7 +613,12 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
     head_anchors = (("head_mocap", 0.15), ("head_link", 0.35),
                     ("torso_link", 0.65))
     for src in sources:
-        src["qadr"] = int(model.joint(src["prefix"] + robot_base).qposadr[0])
+        free_jid = next(
+            jid for jid in range(model.njnt)
+            if model.jnt_type[jid] == mj.mjtJoint.mjJNT_FREE
+            and (mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jid) or "")
+            .startswith(src["prefix"]))
+        src["qadr"] = int(model.jnt_qposadr[free_jid])
         src["ndof"] = src["dof_pos"].shape[1]
         # The pkl's dof count must match this robot's model, otherwise the qpos
         # write would spill into the neighbouring robot's block (or past nq).
