@@ -3,7 +3,7 @@ parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
   damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
-  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
+  velocity_limit : 20       # joint velocity cap [rad/s] (only if use_velocity_limit)
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
   solver : daqp             # QP backend passed to mink.solve_ik
   warmup_iters : 500        # IK iterations on the very first frame (settle from rest)

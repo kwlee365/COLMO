@@ -66,7 +66,7 @@ body_models/
 *.pt
 *.ckpt
 *.bvh
-
+*.onnx
 # Logs
 MUJOCO_LOG.TXT
 *.log

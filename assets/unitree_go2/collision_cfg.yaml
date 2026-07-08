@@ -1,16 +1,4 @@
-# Go2 quadruped collision / IK-solver config for GeneralMotionRetargeting.
-#
-# Retargeting semantics for this robot: the FRONT legs track the human ARMS and
-# the REAR legs track the human LEGS. So the collision groups below are named in
-# body terms: front-left/right leg == l_arm/r_arm, rear-left/right leg == l_leg/
-# r_leg, the two FRONT paws are the "hands" and the two REAR paws are the "feet".
-#
-# The named geoms referenced here were added to go2.xml (see that file):
-#   Trunk, Trunk_front, Trunk_nose                              (base_link)
-#   {FL,FR,RL,RR}_hip_col                                       (hip link)
-#   {FL,FR,RL,RR}_thigh_col                                     (thigh link)
-#   {FL,FR,RL,RR}_calf_col, {FL,FR,RL,RR}_calf_col2             (calf link)
-#   FL, FR (front paws = hands),  RL, RR (rear paws = feet)     (foot spheres)
+# Robot body group definitions and self-collision limit parameters
 parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
   damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
@@ -22,22 +10,20 @@ parameters:
   ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
-  # Go2 stands ~0.30 m tall; the leg targets come from the (heavily down-scaled)
-  # human, so no extra ground lift is applied. Tune per source if the base sits
-  # too high/low relative to the floor.
   ground_offset : 0.0       # per-frame robot ground offset [m] (apply_ground_offset)
-  # Per-frame joint-acceleration cap (SOFT QP constraint). Enabling this routes the
-  # IK solve through the DAQP soft path, which YIELDS on an infeasible frame instead
-  # of raising NoSolutionFound. That is what keeps the HARD collision CBF below from
-  # ever crashing the solve on this extreme front-legs==arms mapping (same setup
-  # KAPEX uses); it also smooths the motion.
+  # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
+  collision_mode : issf
+  # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
+  # Applied as a SOFT QP constraint (DAQP sense=8): honoured when feasible, yields
+  # minimally to the hard collision CBF / joint limits so the QP never goes infeasible.
+  # Comment out / set <=0 to disable.
   acceleration_limit : 300000
+  # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
+  # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
   acceleration_softness : 1.0e-6
-  # Collision-avoidance mode: "cbf" | "issf" | "off". ENABLED (issf).
-  # NOTE: quote the value — bare off is parsed as YAML boolean false.
-  collision_mode : "issf"
-  cbf_gain : 0.0015         # CBF rate (hard-constraint path)
-  issf_epsilon : 20.0       # ISSf robustness scale (larger -> milder margin)
+
+  cbf_gain : 0.0015 # alpha = 1.5
+  issf_epsilon : 20.0
 
 groups:
   # ── Trunk ──

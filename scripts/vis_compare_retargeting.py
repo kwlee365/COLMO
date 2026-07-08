@@ -55,6 +55,8 @@ ALGO_TABLE = {
                 color=(0.25, 0.50, 1.00, 1.0)),
     "omniretarget": dict(subdir="omniretarget", suffix="_original",
                          label="OmniRetarget", color=(1.00, 0.55, 0.10, 1.0)),
+    "holosoma": dict(subdir="holosoma", suffix="_original", label="HoloSoma",
+                     color=(1.00, 0.55, 0.10, 1.0)),
 }
 
 HUMAN_JOINT_COLOR = (1.00, 0.20, 0.20, 1.0)
@@ -241,7 +243,7 @@ def resolve_robot_sources(args, motion):
     """Return an ordered list of robot source dicts for the algorithms present."""
     results_dir = Path(args.results_dir)
     explicit = {"colmo": args.colmo_pkl, "gmr": args.gmr_pkl,
-                "omniretarget": args.omni_pkl}
+                "omniretarget": args.omni_pkl, "holosoma": args.holosoma_pkl}
     sources = []
     for key in args.algos:
         if key not in ALGO_TABLE:
@@ -334,6 +336,7 @@ def main():
     parser.add_argument("--colmo_pkl", type=str, default=None)
     parser.add_argument("--gmr_pkl", type=str, default=None)
     parser.add_argument("--omni_pkl", type=str, default=None)
+    parser.add_argument("--holosoma_pkl", type=str, default=None)
     parser.add_argument("--bvh_file", type=str, default=None,
                         help="Override BVH path (default: "
                              "<motion_dir>/<motion>.bvh).")
@@ -372,12 +375,13 @@ def main():
                         help="World yaw (deg) every character's front should "
                              "point at, at frame 0 (default: face the camera). "
                              "Add 180 if characters end up facing away.")
-    parser.add_argument("--mirror", nargs="*", default=["omniretarget"],
+    parser.add_argument("--mirror", nargs="*",
+                        default=["omniretarget", "holosoma"],
                         metavar="ALGO",
                         help="Algorithms whose motion is shown left-right "
-                             "mirrored (default: omniretarget, which is stored "
-                             "mirrored vs COLMO/GMR). Pass '--mirror' with no "
-                             "names to disable.")
+                             "mirrored (default: omniretarget and holosoma, "
+                             "which are stored mirrored vs COLMO/GMR). Pass "
+                             "'--mirror' with no names to disable.")
 
     # Camera.
     parser.add_argument("--cam_distance", type=float, default=4.5)
