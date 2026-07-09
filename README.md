@@ -1,57 +1,25 @@
 # COLMO: Collision-Free Motion Retargeting
 
-  <a href="https://arxiv.org/abs/2505.02833">
-    <img src="https://img.shields.io/badge/paper-arXiv%3A2505.02833-b31b1b.svg" alt="arXiv Paper"/>
-  </a> <a href="https://arxiv.org/abs/2510.02252">
-    <img src="https://img.shields.io/badge/paper-arXiv%3A2510.02252-b31b1b.svg" alt="arXiv Paper"/>
+  <!-- <a href="https://arxiv.org/abs/2505.02833">
+    <img src="https://img.shields.io/badge/paper-arXiv%3A2505.02833-b31b1b.svg" alt="arXiv Paper"/> -->
   </a> <a href="https://opensource.org/licenses/MIT">
     <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/>
-  </a> <a href="https://github.com/YanjieZe/GMR/releases">
+  <!-- </a> <a href="https://github.com/YanjieZe/GMR/releases">
     <img src="https://img.shields.io/badge/version-0.2.0-blue.svg" alt="Version"/>
-  </a> <a href="https://x.com/ZeYanjie/status/1952446745696469334">
-    <img src="https://img.shields.io/badge/twitter-ZeYanjie-blue.svg" alt="Twitter"/>
   </a> <a href="https://yanjieze.github.io/humanoid-foundation/#GMR">
-    <img src="https://img.shields.io/badge/blog-GMR-blue.svg" alt="Blog"/>
-  </a> <a href="https://www.bilibili.com/video/BV1p1nazeEzC/?share_source=copy_web&vd_source=c76e3ab14ac3f7219a9006b96b4b0f76">
-    <img src="https://img.shields.io/badge/tutorial-BILIBILI-blue.svg" alt="Blog"/>
+    <img src="https://img.shields.io/badge/blog-GMR-blue.svg" alt="Blog"/> -->
   </a>
 
-![Banner for COLMO](./assets/GMR.png)
-
-![COLMO](./assets/GMR_pipeline.png)
-
 #### Key features of COLMO:
-- High-quality offline retargeting from human motion files to humanoid robots.
-- Carefully tuned for good performance of RL tracking policies.
-- Supports multiple human motion data formats (see the table below).
-
-> [!NOTE]
-> This is a trimmed fork focused on **Unitree G1 / H1** and **offline** retargeting.
-> Real-time teleoperation (PICO / OptiTrack streaming) and the other robots from
-> upstream GMR have been removed.
-
-> [!NOTE]
-> If you want this repo to support a new robot or a new human motion data format, send the robot files (`.xml`, `.urdf`, and meshes) / human motion data to <a href="mailto:lastyanjieze@gmail.com">Yanjie Ze</a> or create an issue, we will support it as soon as possible. And please make sure the robot files you sent can be open-sourced in this repo.
+- Generates high-quality kinematic reference motions for humanoid whole-body control and RL-based motion tracking.
+- Collision-free humanoid motion retargeting using ISSf-CBF-based self-collision avoidance and ground-penetration prevention.
+- Soft acceleration-limit constraints that reduce velocity spikes, abrupt corrective motions, and infeasibility caused by hard acceleration bounds.
+- Built on the overall code structure of GMR, including its two-stage differential IK retargeting pipeline, and extended with the proposed collision-free retargeting formulation.
 
 This repo is licensed under the [MIT License](LICENSE).
 
-
-# News & Updates
-> Trimmed to entries relevant to this G1/H1 offline fork (upstream's deleted-robot and
-> teleoperation announcements removed).
-- **2026-01-21:** GMR now supports [Xsens](https://www.xsens.com/) BVH offline data.
-- **2025-11-08:** [MimicKit] from Jason Peng now supports GMR format. Check [here](https://github.com/xbpeng/MimicKit/tree/main/tools/gmr_to_mimickit).
-- **2025-10-14:** GMR now supports [Nokov](https://www.nokov.com/) BVH data.
-- **2025-10-14:** Add a doc on ik config. See [DOC.md](DOC.md)
-- **2025-10-02:** Tech report for GMR is now on [arXiv](https://arxiv.org/abs/2510.02252).
-- **2025-10-01:** GMR now supports converting GMR pickle files to CSV (for beyondmimic), check `scripts/batch_colmo_pkl_to_csv.py`.
-- **2025-09-16:** GMR now supports to use [GVHMR](https://github.com/zju3dv/GVHMR) for extracting human pose from **monocular video** and retargeting to robot.
-- **2025-08-28:** GMR now supports using exported offline FBX motion data from [OptiTrack](https://www.optitrack.com/).
-- **2025-08-24:** GMR supports velocity limits for the robot motors (`use_velocity_limit`), and prints robot DoF/Body/Motor names and IDs (access via `robot_dof_names`, `robot_body_names`, `robot_motor_names`).
-- **2025-08-04:** Initial release of GMR.
-
 ## Demos
-
+<!-- 
 <table>
   <tr>
     <td align="center" width="20%">
@@ -122,7 +90,7 @@ This repo is licensed under the [MIT License](LICENSE).
     </td>
     <td align="center">
       <b>Demo 13</b><br>
-      Extracting human pose (GVHMR + COLMO).<br>
+      Extracting human pose (GVHMR + GMR).<br>
       <a href="https://www.bilibili.com/video/BV1Tnpmz9EaE">▶ Watch on Bilibili</a>
     </td>
     <td align="center">
@@ -136,22 +104,7 @@ This repo is licensed under the [MIT License](LICENSE).
       <i>Coming soon...</i>
     </td>
   </tr>
-</table>
-
-
-## Supported Robots and Data Formats
-
-
-
-Supported input formats: SMPL-X ([AMASS](https://amass.is.tue.mpg.de/), [OMOMO](https://github.com/lijiaman/omomo_release)), BVH ([LAFAN1](https://github.com/ubisoft/ubisoft-laforge-animation-dataset) / [Nokov](https://www.nokov.com/) / [Xsens](https://www.xsens.com/)), FBX ([OptiTrack](https://www.optitrack.com/), offline), and [GVHMR](https://github.com/zju3dv/GVHMR) monocular video.
-
-| Robot | `--robot` | Robot DoF | SMPL-X | BVH (LAFAN1) | FBX (offline) | BVH (Nokov/Xsens) |
-| --- | --- | --- | --- | --- | --- | --- |
-| Unitree G1 | `unitree_g1` | Leg (2\*6) + Waist (3) + Arm (2\*7) = 29 | ✅ | ✅ | ✅ | ✅ |
-| Unitree H1 | `unitree_h1` | Leg (2\*5) + Waist (1) + Arm (2\*4) = 19 | ✅ | TBD | TBD | TBD |
-
-
-
+</table> -->
 
 ## Installation
 
@@ -161,11 +114,11 @@ Supported input formats: SMPL-X ([AMASS](https://amass.is.tue.mpg.de/), [OMOMO](
 First create your conda environment:
 
 ```bash
-conda create -n colmo python=3.10 -y
-conda activate colmo
+conda create -n gmr python=3.10 -y
+conda activate gmr
 ```
 
-Then, install COLMO:
+Then, install GMR:
 
 ```bash
 pip install -e .
@@ -205,34 +158,6 @@ Each frame of **human motion data** is formulated as a dict of (human_body_name,
 Each frame of **robot motion data** can be understood as a tuple of (robot_base_translation, robot_base_rotation, robot_joint_positions).
 
 ## Usage
-
-### Frequently Used Commands
-
-Typical LAFAN1 → Unitree G1 workflow (inspect → batch retarget → batch video):
-
-```bash
-# 1. Inspect one motion: robot + BVH skeleton overlay + collision geoms
-python scripts/vis_colmo_with_bvh.py \
-    --bvh_file motion_data/lafan1/fallAndGetUp1_subject1.bvh \
-    --robot unitree_g1 --collision_mode issf \
-    --show_robot --show_collision --no_follow_camera --no_rate_limit --no_labels
-
-# 2. Batch retarget a whole BVH folder -> per-motion .pkl
-python scripts/bvh_to_robot_dataset.py \
-    --src_folder motion_data/lafan1 \
-    --tgt_folder results/lafan1/colmo \
-    --robot unitree_g1 --collision_mode issf
-
-# 3. Batch record videos from the retargeted .pkl folder
-python scripts/vis_robot_motion_dataset.py \
-    --mode batch --robot unitree_g1 \
-    --robot_motion_folder results/lafan1/colmo \
-    --video_dir videos/lafan1/colmo
-```
-
-`--collision_mode` is one of `cbf` (hard CBF) | `issf` (robustified CBF) | `off`;
-if omitted it falls back to `collision_mode` in `assets/<robot>/collision_cfg.yaml`.
-See [`scripts/README.md`](scripts/README.md) for the full list of entry points.
 
 ### Retargeting from SMPL-X (AMASS, OMOMO) to Robot
 
@@ -303,9 +228,11 @@ By default there is no visualization for batch retargeting.
 
 
 
-## Retargeting from BVH (Xsens) to Robot
+## Retargeting from Xsens to Robot
 
-#### Visualize bvh data using mujoco:
+### Offline: Xsens BVH to Robot
+
+#### Visualize Xsens BVH Data using MuJoCo
 
 Install PyQt6:
 ```bash
@@ -314,14 +241,14 @@ pip install PyQt6 PyQt6-Qt6 PyQt6-sip
 
 
 ```bash
-python collision_free_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
+python general_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
   --bvh_file <path_to_dir_of_bvh_data> \
   --scale <displacement scaling size> \
   --reset_to_zero
 ```
 like
 ```bash
-python collision_free_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
+python general_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
   --scale 0.01 \
   --bvh_file assets/xsens_bvh_test/251021_04_boxing_120Hz_cm_3DsMax.bvh \
   --reset_to_zero
@@ -354,7 +281,7 @@ python scripts/xsens_bvh_to_robot.py \
 like
 ```bash
 python scripts/xsens_bvh_to_robot.py  \
-  --robot unitree_g1 \
+  --robot unitree_h1_2 \
   --scale 0.01 \
   --reset_to_zero \
   --bvh_format 3DSM \
@@ -376,9 +303,66 @@ python scripts/xsens_bvh_to_robot.py  \
 - `--bvh_format` is used to set the format of the bvh being parsed. In the Xsens MVN software, BVH files in three formats can be exported. There will be some differences among BVH files in different formats. Here I recommend using the 3D Studio Max format.(In fact, I have not yet completed the parsing of data in other formats.)
 
 - The exported pkl file will represent quaternions in the `wxyz` format. ^ _ ^
-  
 
-### Retargeting from FBX (OptiTrack, offline) to Robot
+---
+
+### Online Streaming (Xsens MVN)
+
+Stream live motion data from **Xsens MVN Software** directly into GMR for real-time robot retargeting.
+
+#### 1. Install the Xsens MVN UDP Data Parser
+
+The `xsens_mvn_robot_python` library parses the Xsens MVN network datagram (Position + Orientation in quaternion format) into Python-accessible data structures. Install the correct `.whl` file for your Python version.
+
+```bash
+# Clone the parser repository
+git clone https://github.com/jiminghe/xsens_mvn_robot_python.git
+cd xsens_mvn_robot_python
+
+# Install the matching wheel for your Python version
+# Example for Python 3.10:
+pip install xsens_mvn_robot_python-*-cp310-*.whl
+```
+
+> Select the `.whl` file whose filename contains your Python version tag (e.g. `cp310` for Python 3.10, `cp38` for Python 3.8). This library handles UDP socket binding and datagram unpacking automatically.
+
+#### 2. Configure the Xsens MVN Network Streamer
+
+Launch **Xsens MVN Software** on either Windows or Linux. You can stream from a live recording session while wearing the Xsens Link / Awinda suit, or replay a previously recorded `.mvn` file.
+
+| Step | Action |
+|---|---|
+| 1 | Click **Options → Network Streamer** |
+| 2 | In the pop-up window, click **Add** to create a new stream destination |
+| 3 | Set the **Host Address** (see table below) |
+| 4 | Under Network Streamer Options, tick **Position + Orientation (Quaternion)** only |
+| 5 | No other data sources are needed for GMR retargeting |
+| 6 | Click **OK** — confirm green status on the streamer |
+
+**Host Address Reference:**
+
+| Scenario | Host Address Setting |
+|---|---|
+| MVN on the same Linux machine (MVN Linux) | `127.0.0.1` (localhost) |
+| MVN on Windows → streaming to Ubuntu (same LAN) | Ubuntu IP address, e.g. `192.168.1.10` |
+
+> **Important:** When streaming from a Windows PC to an Ubuntu computer, ensure both machines are on the same LAN. Disable Windows Firewall for the MVN application or create an inbound UDP rule on the MVN default port (`9763`).
+
+#### 3. Run the GMR Live Streaming Script
+
+With the Xsens MVN Network Streamer active and the conda environment loaded, run the live-streaming retargeting script. A MuJoCo window will open showing the retargeted Unitree G1 robot mirroring your movements in real time.
+
+```bash
+# Activate the GMR environment
+conda activate gmr
+
+# Run the Xsens live streaming retargeting script
+python scripts/xsens_live_streaming.py
+```
+
+### Retargeting from FBX (OptiTrack) to Robot
+
+#### Offline FBX Files
 
 Retarget a single motion:
 
@@ -395,7 +379,7 @@ python poselib/fbx_importer.py --input <path_to_fbx_file.fbx> --output <path_to_
 3. Then, run the command below to retarget the extracted motion data to your robot:
 
 ```bash
-conda activate colmo
+conda activate gmr
 # single motion
 python scripts/fbx_offline_to_robot.py --motion_file <path_to_saved_motion_data.pkl> --robot <path_to_robot_data> --save_path <path_to_save_robot_data.pkl> --rate_limit
 ```
@@ -403,6 +387,24 @@ python scripts/fbx_offline_to_robot.py --motion_file <path_to_saved_motion_data.
 By default you should see the visualization of the retargeted robot motion in a mujoco window. 
 
 - `--rate_limit` is used to limit the rate of the retargeted robot motion to keep the same as the human motion. If you want it as fast as possible, remove `--rate_limit`.
+
+#### Online Streaming
+
+We provide the script to use OptiTrack MoCap data for real-time streaming and retargeting.
+
+Usually you will have two computers, one is the server that installed with Motive (Desktop APP for OptiTrack) and the other is the client that installed with GMR.
+
+Find the server ip (the computer that installed with Motive) and client ip (your computer). Set the streaming as follows:
+
+![OptiTrack Streaming](./assets/optitrack.png)
+
+And then run:
+
+```bash
+python scripts/optitrack_to_robot.py --server_ip <server_ip> --client_ip <client_ip> --use_multicast False --robot unitree_g1
+```
+
+You should see the visualization of the retargeted robot motion in a mujoco window.
 
 ### Visualize saved robot motion
 
@@ -425,55 +427,16 @@ After launching the MuJoCo visualization window and clicking on it, you can use 
 * `]`: play the next motion
 * `space`: toggle play/pause
 
-## Speed Benchmark
-
-| CPU | Retargeting Speed |
-| --- | --- |
-| AMD Ryzen Threadripper 7960X 24-Cores | 60~70 FPS |
-| 13th Gen Intel Core i9-13900K 24-Cores | 35~45 FPS |
-| TBD | TBD |
-
 ## Citation
 
-If you find our code useful, please consider citing our related papers:
-
-```bibtex
-@article{joao2025gmr,
-  title={Retargeting Matters: General Motion Retargeting for Humanoid Motion Tracking},
-  author= {Joao Pedro Araujo and Yanjie Ze and Pei Xu and Jiajun Wu and C. Karen Liu},
-  year= {2025},
-  journal= {arXiv preprint arXiv:2510.02252}
-}
-```
-
-```bibtex
-@article{ze2025twist,
-  title={TWIST: Teleoperated Whole-Body Imitation System},
-  author= {Yanjie Ze and Zixuan Chen and João Pedro Araújo and Zi-ang Cao and Xue Bin Peng and Jiajun Wu and C. Karen Liu},
-  year= {2025},
-  journal= {arXiv preprint arXiv:2505.02833}
-}
-```
-
-and this github repo:
-
-```bibtex
-@software{ze2025gmr,
-  title={GMR: General Motion Retargeting},
-  author= {Yanjie Ze and João Pedro Araújo and Jiajun Wu and C. Karen Liu},
-  year= {2025},
-  url= {https://github.com/YanjieZe/GMR},
-  note= {GitHub repository}
-}
-```
 
 ## Known Issues
 
 Designing a single config for all different humans is not trivial. We observe some motions might have bad retargeting results. If you observe some bad results, please let us know! We now have a collection of such motions in [TEST_MOTIONS.md](TEST_MOTIONS.md).
 
 ## Acknowledgement
-
-Our IK solver is built upon [mink](https://github.com/kevinzakka/mink) and [mujoco](https://github.com/google-deepmind/mujoco). Our visualization is built upon [mujoco](https://github.com/google-deepmind/mujoco). The human motion data we try includes [AMASS](https://amass.is.tue.mpg.de/), [OMOMO](https://github.com/lijiaman/omomo_release), and [LAFAN1](https://github.com/ubisoft/ubisoft-laforge-animation-dataset).
+This repository is built upon the overall code structure of [GMR](https://github.com/YanjieZe/GeneralMotionRetargeting). We thank the GMR authors for open-sourcing their implementation.
+Accordingly, our IK solver is built upon [mink](https://github.com/kevinzakka/mink) and [mujoco](https://github.com/google-deepmind/mujoco). Our visualization is built upon [mujoco](https://github.com/google-deepmind/mujoco). The human motion data we try includes [AMASS](https://amass.is.tue.mpg.de/), [OMOMO](https://github.com/lijiaman/omomo_release), and [LAFAN1](https://github.com/ubisoft/ubisoft-laforge-animation-dataset).
 
 The original robot models can be found at the following locations:
 
