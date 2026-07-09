@@ -97,7 +97,14 @@ class RobotMotionViewer:
         # robot XML). Show them when requested, otherwise keep them hidden.
         self.viewer.opt.geomgroup[2] = 1 if show_collision else 0
 
-        
+        # Initial camera pose. In step() only the look-at point is re-applied
+        # each frame (so the camera tracks the moving base); distance (zoom) and
+        # azimuth/elevation (rotation) are set once here and then left free for
+        # the user's mouse.
+        self.viewer.cam.lookat = self.data.xpos[self.model.body(self.robot_base).id]
+        self.viewer.cam.distance = self.viewer_cam_distance
+        self.viewer.cam.elevation = -10
+
         if self.record_video:
             assert video_path is not None, "Please provide video path for recording"
             self.video_path = video_path
@@ -144,10 +151,9 @@ class RobotMotionViewer:
         mj.mj_forward(self.model, self.data)
 
         if follow_camera:
+            # Keep the base centered (look-at tracks the moving base), but leave
+            # zoom (distance) and rotation (azimuth/elevation) under mouse control.
             self.viewer.cam.lookat = self.data.xpos[self.model.body(self.robot_base).id]
-            self.viewer.cam.distance = self.viewer_cam_distance
-            self.viewer.cam.elevation = -10  # 正面视角，轻微向下看
-            # self.viewer.cam.azimuth = 180    # 正面朝向机器人
         
         if human_motion_data is not None or contact_points:
             # Clean custom geometry

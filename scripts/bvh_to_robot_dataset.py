@@ -100,6 +100,23 @@ def process_one_bvh(
     )
     body_names = kinematics_model.body_names
 
+    HEIGHT_ADJUST = True
+    PERFRAME_ADJUST = False
+    if HEIGHT_ADJUST:
+        body_pos, _ = kinematics_model.forward_kinematics(
+            torch.from_numpy(root_pos).to(device=device, dtype=torch.float),
+            torch.from_numpy(root_rot).to(device=device, dtype=torch.float),
+            torch.from_numpy(dof_pos).to(device=device, dtype=torch.float),
+        )  # T x N x 3
+        ground_offset = 0.0
+        if not PERFRAME_ADJUST:
+            lowest_height = torch.min(body_pos[..., 2]).item()
+            root_pos[:, 2] = root_pos[:, 2] - lowest_height + ground_offset
+        else:
+            for i in range(root_pos.shape[0]):
+                lowest_body_part = torch.min(body_pos[i, :, 2]).item()
+                root_pos[i, 2] = root_pos[i, 2] - lowest_body_part + ground_offset
+
     motion_data = {
         "root_pos": root_pos,
         "root_rot": root_rot,

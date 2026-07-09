@@ -332,7 +332,7 @@ def main():
     parser.add_argument("--results_dir", type=str,
                         default=str(REPO_ROOT / "results" / "lafan1"))
     parser.add_argument("--motion_dir", type=str,
-                        default=str(REPO_ROOT / "motion_data" / "lafan1"))
+                        default=str(REPO_ROOT / "human_motion" / "lafan1"))
     parser.add_argument("--colmo_pkl", type=str, default=None)
     parser.add_argument("--gmr_pkl", type=str, default=None)
     parser.add_argument("--omni_pkl", type=str, default=None)
