@@ -90,7 +90,7 @@ This repo is licensed under the [MIT License](LICENSE).
     </td>
     <td align="center">
       <b>Demo 13</b><br>
-      Extracting human pose (GVHMR + GMR).<br>
+      Extracting human pose (GVHMR + COLMO).<br>
       <a href="https://www.bilibili.com/video/BV1Tnpmz9EaE">▶ Watch on Bilibili</a>
     </td>
     <td align="center">
@@ -114,11 +114,11 @@ This repo is licensed under the [MIT License](LICENSE).
 First create your conda environment:
 
 ```bash
-conda create -n gmr python=3.10 -y
-conda activate gmr
+conda create -n colmo python=3.10 -y
+conda activate colmo
 ```
 
-Then, install GMR:
+Then, install COLMO:
 
 ```bash
 pip install -e .
@@ -241,14 +241,14 @@ pip install PyQt6 PyQt6-Qt6 PyQt6-sip
 
 
 ```bash
-python general_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
+python collision_free_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
   --bvh_file <path_to_dir_of_bvh_data> \
   --scale <displacement scaling size> \
   --reset_to_zero
 ```
 like
 ```bash
-python general_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
+python collision_free_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
   --scale 0.01 \
   --bvh_file assets/xsens_bvh_test/251021_04_boxing_120Hz_cm_3DsMax.bvh \
   --reset_to_zero
@@ -308,7 +308,7 @@ python scripts/xsens_bvh_to_robot.py  \
 
 ### Online Streaming (Xsens MVN)
 
-Stream live motion data from **Xsens MVN Software** directly into GMR for real-time robot retargeting.
+Stream live motion data from **Xsens MVN Software** directly into COLMO for real-time robot retargeting.
 
 #### 1. Install the Xsens MVN UDP Data Parser
 
@@ -336,7 +336,7 @@ Launch **Xsens MVN Software** on either Windows or Linux. You can stream from a 
 | 2 | In the pop-up window, click **Add** to create a new stream destination |
 | 3 | Set the **Host Address** (see table below) |
 | 4 | Under Network Streamer Options, tick **Position + Orientation (Quaternion)** only |
-| 5 | No other data sources are needed for GMR retargeting |
+| 5 | No other data sources are needed for COLMO retargeting |
 | 6 | Click **OK** — confirm green status on the streamer |
 
 **Host Address Reference:**
@@ -348,13 +348,13 @@ Launch **Xsens MVN Software** on either Windows or Linux. You can stream from a 
 
 > **Important:** When streaming from a Windows PC to an Ubuntu computer, ensure both machines are on the same LAN. Disable Windows Firewall for the MVN application or create an inbound UDP rule on the MVN default port (`9763`).
 
-#### 3. Run the GMR Live Streaming Script
+#### 3. Run the COLMO Live Streaming Script
 
 With the Xsens MVN Network Streamer active and the conda environment loaded, run the live-streaming retargeting script. A MuJoCo window will open showing the retargeted Unitree G1 robot mirroring your movements in real time.
 
 ```bash
-# Activate the GMR environment
-conda activate gmr
+# Activate the COLMO environment
+conda activate colmo
 
 # Run the Xsens live streaming retargeting script
 python scripts/xsens_live_streaming.py
@@ -379,7 +379,7 @@ python poselib/fbx_importer.py --input <path_to_fbx_file.fbx> --output <path_to_
 3. Then, run the command below to retarget the extracted motion data to your robot:
 
 ```bash
-conda activate gmr
+conda activate colmo
 # single motion
 python scripts/fbx_offline_to_robot.py --motion_file <path_to_saved_motion_data.pkl> --robot <path_to_robot_data> --save_path <path_to_save_robot_data.pkl> --rate_limit
 ```
@@ -392,7 +392,7 @@ By default you should see the visualization of the retargeted robot motion in a 
 
 We provide the script to use OptiTrack MoCap data for real-time streaming and retargeting.
 
-Usually you will have two computers, one is the server that installed with Motive (Desktop APP for OptiTrack) and the other is the client that installed with GMR.
+Usually you will have two computers, one is the server that installed with Motive (Desktop APP for OptiTrack) and the other is the client that installed with COLMO.
 
 Find the server ip (the computer that installed with Motive) and client ip (your computer). Set the streaming as follows:
 
