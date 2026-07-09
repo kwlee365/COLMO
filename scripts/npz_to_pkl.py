@@ -1,5 +1,5 @@
 """
-Convert a holosoma-generated .npz motion file into the GMR .pkl format
+Convert a holosoma-generated .npz motion file into the COLMO .pkl format
 so it can be visualized with `scripts/vis_robot_motion.py`.
 
 Holosoma npz layout (e.g. holosoma/lafan/*.npz):
@@ -12,7 +12,7 @@ The number of DOF depends on the robot (unitree_g1: 29 -> qpos (N, 36);
 kapex: 33 -> qpos (N, 40)). The conversion itself is robot-agnostic slicing;
 pass --robot to validate the qpos width against the target robot model.
 
-GMR pkl layout (see scripts/bvh_to_robot.py and data_loader.py):
+COLMO pkl layout (see scripts/bvh_to_robot.py and data_loader.py):
     fps:            int
     root_pos:       (N, 3)
     root_rot:       (N, 4)   # xyzw
@@ -34,7 +34,7 @@ def get_robot_n_dof(robot: str) -> int:
     for a registered robot, by loading its MuJoCo model."""
     import mujoco
 
-    from general_motion_retargeting.params import ROBOT_XML_DICT
+    from collision_free_motion_retargeting.params import ROBOT_XML_DICT
 
     if robot not in ROBOT_XML_DICT:
         raise ValueError(
@@ -63,7 +63,7 @@ def convert_one(npz_path: str, pkl_path: str, expected_n_dof: int = None) -> Non
         )
 
     root_pos = qpos[:, :3].astype(np.float64)
-    # MuJoCo stores quaternions as wxyz; GMR pkl stores them as xyzw.
+    # MuJoCo stores quaternions as wxyz; COLMO pkl stores them as xyzw.
     root_rot_wxyz = qpos[:, 3:7]
     root_rot = root_rot_wxyz[:, [1, 2, 3, 0]].astype(np.float64)
     dof_pos = qpos[:, 7:].astype(np.float64)
@@ -84,7 +84,7 @@ def convert_one(npz_path: str, pkl_path: str, expected_n_dof: int = None) -> Non
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert holosoma .npz motion files to GMR .pkl format.")
+    parser = argparse.ArgumentParser(description="Convert holosoma .npz motion files to COLMO .pkl format.")
     parser.add_argument(
         "--npz_path",
         type=str,

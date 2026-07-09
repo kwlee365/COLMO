@@ -5,9 +5,9 @@ import time
 
 import numpy as np
 
-from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer
-from general_motion_retargeting.utils.smpl import load_gvhmr_pred_file, get_gvhmr_data_offline_fast
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
+from collision_free_motion_retargeting import RobotMotionViewer
+from collision_free_motion_retargeting.utils.smpl import load_gvhmr_pred_file, get_gvhmr_data_offline_fast
 
 from rich import print
 
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     
    
     # Initialize the retargeting system
-    retarget = GMR(
+    retarget = COLMO(
         actual_human_height=actual_human_height,
         src_human="smplx",
         tgt_robot=args.robot,

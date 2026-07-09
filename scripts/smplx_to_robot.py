@@ -5,9 +5,9 @@ import time
 
 import numpy as np
 
-from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer
-from general_motion_retargeting.utils.smpl import load_smplx_file, get_smplx_data_offline_fast
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
+from collision_free_motion_retargeting import RobotMotionViewer
+from collision_free_motion_retargeting.utils.smpl import load_smplx_file, get_smplx_data_offline_fast
 
 from rich import print
 
@@ -78,7 +78,7 @@ if __name__ == "__main__":
     # Initialize the retargeting system. The JSON human_scale_table is applied
     # as-is (runtime height ratio kept at 1.0 via actual_human_height=None),
     # matching the BVH path.
-    retarget = GMR(
+    retarget = COLMO(
         actual_human_height=None,
         src_human="smplx",
         tgt_robot=args.robot,

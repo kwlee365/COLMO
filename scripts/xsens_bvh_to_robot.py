@@ -1,9 +1,9 @@
 import argparse
 import pathlib
 import time
-from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer
-from general_motion_retargeting.utils.xsens import load_xsens_file
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
+from collision_free_motion_retargeting import RobotMotionViewer
+from collision_free_motion_retargeting.utils.xsens import load_xsens_file
 from rich import print
 from tqdm import tqdm
 import os
@@ -113,7 +113,7 @@ if __name__ == "__main__":
     lafan1_data_frames, actual_human_height,frame_time = load_xsens_file(args)
 
     # Initialize the retargeting system
-    retargeter = GMR(
+    retargeter = COLMO(
         src_human="bvh_xsens",
         tgt_robot=args.robot,
         actual_human_height=actual_human_height,

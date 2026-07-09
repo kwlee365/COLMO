@@ -1,4 +1,4 @@
-from general_motion_retargeting.utils.xsens_vendor.BVHParser import BVHParser
+from collision_free_motion_retargeting.utils.xsens_vendor.BVHParser import BVHParser
 
 
 class BVHParser_deit(BVHParser):

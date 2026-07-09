@@ -1,4 +1,4 @@
-# GMR: General Motion Retargeting
+# COLMO: Collision-Free Motion Retargeting
 
   <a href="https://arxiv.org/abs/2505.02833">
     <img src="https://img.shields.io/badge/paper-arXiv%3A2505.02833-b31b1b.svg" alt="arXiv Paper"/>
@@ -16,11 +16,11 @@
     <img src="https://img.shields.io/badge/tutorial-BILIBILI-blue.svg" alt="Blog"/>
   </a>
 
-![Banner for GMR](./assets/GMR.png)
+![Banner for COLMO](./assets/GMR.png)
 
-![GMR](./assets/GMR_pipeline.png)
+![COLMO](./assets/GMR_pipeline.png)
 
-#### Key features of GMR:
+#### Key features of COLMO:
 - High-quality offline retargeting from human motion files to humanoid robots.
 - Carefully tuned for good performance of RL tracking policies.
 - Supports multiple human motion data formats (see the table below).
@@ -44,7 +44,7 @@ This repo is licensed under the [MIT License](LICENSE).
 - **2025-10-14:** GMR now supports [Nokov](https://www.nokov.com/) BVH data.
 - **2025-10-14:** Add a doc on ik config. See [DOC.md](DOC.md)
 - **2025-10-02:** Tech report for GMR is now on [arXiv](https://arxiv.org/abs/2510.02252).
-- **2025-10-01:** GMR now supports converting GMR pickle files to CSV (for beyondmimic), check `scripts/batch_gmr_pkl_to_csv.py`.
+- **2025-10-01:** GMR now supports converting GMR pickle files to CSV (for beyondmimic), check `scripts/batch_colmo_pkl_to_csv.py`.
 - **2025-09-16:** GMR now supports to use [GVHMR](https://github.com/zju3dv/GVHMR) for extracting human pose from **monocular video** and retargeting to robot.
 - **2025-08-28:** GMR now supports using exported offline FBX motion data from [OptiTrack](https://www.optitrack.com/).
 - **2025-08-24:** GMR supports velocity limits for the robot motors (`use_velocity_limit`), and prints robot DoF/Body/Motor names and IDs (access via `robot_dof_names`, `robot_body_names`, `robot_motor_names`).
@@ -122,7 +122,7 @@ This repo is licensed under the [MIT License](LICENSE).
     </td>
     <td align="center">
       <b>Demo 13</b><br>
-      Extracting human pose (GVHMR + GMR).<br>
+      Extracting human pose (GVHMR + COLMO).<br>
       <a href="https://www.bilibili.com/video/BV1Tnpmz9EaE">▶ Watch on Bilibili</a>
     </td>
     <td align="center">
@@ -161,11 +161,11 @@ Supported input formats: SMPL-X ([AMASS](https://amass.is.tue.mpg.de/), [OMOMO](
 First create your conda environment:
 
 ```bash
-conda create -n gmr python=3.10 -y
-conda activate gmr
+conda create -n colmo python=3.10 -y
+conda activate colmo
 ```
 
-Then, install GMR:
+Then, install COLMO:
 
 ```bash
 pip install -e .
@@ -212,7 +212,7 @@ Typical LAFAN1 → Unitree G1 workflow (inspect → batch retarget → batch vid
 
 ```bash
 # 1. Inspect one motion: robot + BVH skeleton overlay + collision geoms
-python scripts/vis_gmr_with_bvh.py \
+python scripts/vis_colmo_with_bvh.py \
     --bvh_file motion_data/lafan1/fallAndGetUp1_subject1.bvh \
     --robot unitree_g1 --collision_mode issf \
     --show_robot --show_collision --no_follow_camera --no_rate_limit --no_labels
@@ -314,14 +314,14 @@ pip install PyQt6 PyQt6-Qt6 PyQt6-sip
 
 
 ```bash
-python general_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
+python collision_free_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
   --bvh_file <path_to_dir_of_bvh_data> \
   --scale <displacement scaling size> \
   --reset_to_zero
 ```
 like
 ```bash
-python general_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
+python collision_free_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
   --scale 0.01 \
   --bvh_file assets/xsens_bvh_test/251021_04_boxing_120Hz_cm_3DsMax.bvh \
   --reset_to_zero
@@ -395,7 +395,7 @@ python poselib/fbx_importer.py --input <path_to_fbx_file.fbx> --output <path_to_
 3. Then, run the command below to retarget the extracted motion data to your robot:
 
 ```bash
-conda activate gmr
+conda activate colmo
 # single motion
 python scripts/fbx_offline_to_robot.py --motion_file <path_to_saved_motion_data.pkl> --robot <path_to_robot_data> --save_path <path_to_save_robot_data.pkl> --rate_limit
 ```

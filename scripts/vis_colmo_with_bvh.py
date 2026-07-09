@@ -8,14 +8,14 @@ from loop_rate_limiters import RateLimiter
 from rich import print
 from tqdm import tqdm
 
-from general_motion_retargeting import (
-    GeneralMotionRetargeting as GMR,
+from collision_free_motion_retargeting import (
+    CollisionFreeMotionRetargeting as COLMO,
     ROBOT_XML_DICT,
     ROBOT_BASE_DICT,
     VIEWER_CAM_DISTANCE_DICT,
 )
-from general_motion_retargeting.utils.lafan1 import load_bvh_file
-from general_motion_retargeting.utils.lafan_vendor.extract import read_bvh
+from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file
+from collision_free_motion_retargeting.utils.lafan_vendor.extract import read_bvh
 
 
 def draw_sphere(viewer, pos, radius=0.025, rgba=(1.0, 0.3, 0.3, 1.0), label=None):
@@ -81,7 +81,7 @@ def draw_frame_axes(viewer, pos, quat_wxyz, size=0.08):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Solve GMR retargeting for G1 and show BVH human skeleton in the same MuJoCo viewer."
+        description="Solve COLMO retargeting for G1 and show BVH human skeleton in the same MuJoCo viewer."
     )
     parser.add_argument("--bvh_file", required=True, type=str, help="BVH motion file.")
     parser.add_argument("--format", choices=["lafan1", "nokov"], default="lafan1")
@@ -138,7 +138,7 @@ if __name__ == "__main__":
           f"(human_height={actual_human_height:.2f} m, {len(bones)} bones)")
 
     # --- Initialize retargeter and robot MuJoCo model -----------------------------------
-    retargeter = GMR(
+    retargeter = COLMO(
         src_human=f"bvh_{args.format}",
         tgt_robot=args.robot,
         actual_human_height=actual_human_height,
@@ -236,7 +236,7 @@ if __name__ == "__main__":
     rate_limited = args.rate_limit and not args.no_rate_limit
     rate_limiter = RateLimiter(frequency=args.motion_fps, warn=False) if rate_limited else None
 
-    pbar = tqdm(total=len(frames), desc="GMR + BVH")
+    pbar = tqdm(total=len(frames), desc="COLMO + BVH")
     i = 0
 
     try:
@@ -274,7 +274,7 @@ if __name__ == "__main__":
                             rgba=(0.2, 0.4, 1.0, 1.0),
                             label=None if args.no_labels else body_name)
 
-            # Apply JSON's human_scale_table the same way GMR.scale_human_data
+            # Apply JSON's human_scale_table the same way COLMO.scale_human_data
             # does, but with `effective_scale` so intermediate (non-keypoint)
             # bones also move correctly with their nearest scaled ancestor —
             # otherwise the visualized skeleton would have torn joints.

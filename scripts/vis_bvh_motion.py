@@ -8,8 +8,8 @@ from loop_rate_limiters import RateLimiter
 from rich import print
 from tqdm import tqdm
 
-from general_motion_retargeting.utils.lafan1 import load_bvh_file
-from general_motion_retargeting.utils.lafan_vendor.extract import read_bvh
+from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file
+from collision_free_motion_retargeting.utils.lafan_vendor.extract import read_bvh
 
 
 # Minimal MuJoCo world for skeleton visualization

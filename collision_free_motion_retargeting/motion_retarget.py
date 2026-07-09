@@ -13,7 +13,7 @@ from mink.solve_ik import _compute_qp_objective, _compute_qp_inequalities
 import daqp
 from ctypes import c_int
 
-# Supported collision-avoidance modes for GeneralMotionRetargeting:
+# Supported collision-avoidance modes for CollisionFreeMotionRetargeting:
 #   "cbf"  : hard QP inequality CBF (mink.CollisionAvoidanceLimit) added to the IK limits.
 #   "issf" : hard QP inequality with the ISSf-CBF robustness margin
 #            (ISSfCollisionAvoidanceLimit); a robustified variant of "cbf".
@@ -275,8 +275,8 @@ class AccelerationLimit(mink.Limit):
         return mink.Constraint(G=G, h=h)
 
 
-class GeneralMotionRetargeting:
-    """General Motion Retargeting (GMR).
+class CollisionFreeMotionRetargeting:
+    """Collision-Free Motion Retargeting (COLMO).
     """
     def __init__(
         self,
@@ -299,7 +299,7 @@ class GeneralMotionRetargeting:
         self.model = mj.MjModel.from_xml_path(self.xml_file)
 
         # Print DoF names in order
-        print("[GMR] Robot Degrees of Freedom (DoF) names and their order:")
+        print("[COLMO] Robot Degrees of Freedom (DoF) names and their order:")
         self.robot_dof_names = {}
         for i in range(self.model.nv):  # 'nv' is the number of DoFs
             dof_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, self.model.dof_jntid[i])
@@ -308,7 +308,7 @@ class GeneralMotionRetargeting:
                 print(f"DoF {i}: {dof_name}")
             
             
-        print("[GMR] Robot Body names and their IDs:")
+        print("[COLMO] Robot Body names and their IDs:")
         self.robot_body_names = {}
         for i in range(self.model.nbody):  # 'nbody' is the number of bodies
             body_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, i)
@@ -317,7 +317,7 @@ class GeneralMotionRetargeting:
                 print(f"Body ID {i}: {body_name}")
 
         
-        print("[GMR] Robot Motor (Actuator) names and their IDs:")
+        print("[COLMO] Robot Motor (Actuator) names and their IDs:")
         self.robot_motor_names = {}
         for i in range(self.model.nu):  # 'nu' is the number of actuators (motors)
             motor_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_ACTUATOR, i)
@@ -459,11 +459,11 @@ class GeneralMotionRetargeting:
         self._accel_v_prev = np.zeros(self.model.nv)
 
         if verbose:
-            print(f"[GMR] Final Parameters ->  Damping: {self.damping}, Max Iterations: {self.max_iter}")
+            print(f"[COLMO] Final Parameters ->  Damping: {self.damping}, Max Iterations: {self.max_iter}")
             print(f"Velocity Limit: {self.vel_limit}")
-            print(f"[GMR] Acceleration Limit (soft): "
+            print(f"[COLMO] Acceleration Limit (soft): "
                   f"{f'{self.acc_limit} (rho_soft={self.accel_rho_soft})' if self.accel_limit is not None else 'off'}")
-            print(f"[GMR] Collision mode: {self.collision_mode} "
+            print(f"[COLMO] Collision mode: {self.collision_mode} "
                   f"(constraint={self.use_collision_constraint}"
                   f"{f', issf_epsilon={self.issf_epsilon}' if self.use_issf else ''})")
         
@@ -551,12 +551,12 @@ class GeneralMotionRetargeting:
                 body_name = cp['body_name']
                 human_body_name = robot_to_human.get(body_name, '')
                 if not human_body_name:
-                    print(f"[GMR][FootContact] WARNING: '{body_name}' not in IK match tables, skipping.")
+                    print(f"[COLMO][FootContact] WARNING: '{body_name}' not in IK match tables, skipping.")
                     continue
                 local_pos = np.array(cp.get('local_pos', [0.0, 0.0, 0.0]), dtype=float)
                 body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, body_name)
                 if body_id == -1:
-                    print(f"[GMR][FootContact] WARNING: robot body '{body_name}' not found in model, skipping.")
+                    print(f"[COLMO][FootContact] WARNING: robot body '{body_name}' not found in model, skipping.")
                     continue
                 contact_points.append((body_id, local_pos))
                 human_body_names.append(human_body_name)
@@ -575,12 +575,12 @@ class GeneralMotionRetargeting:
                     # contact_points contains resolved (body_id, local_pos); use human_body_names for display
                     robot_names = [mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, bid) for bid, _ in contact_points]
                     pairs = list(zip(robot_names, human_body_names))
-                    print(f"[GMR] FootContactLimit enabled | {pairs} | "
+                    print(f"[COLMO] FootContactLimit enabled | {pairs} | "
                           f"threshold: {fc_threshold} m/s | human_fps: {self.motion_fps} Hz | "
                           f"threshold_pos: {fc_threshold / self.motion_fps * 1000:.3f} mm/frame | "
                           f"velocity_bound: {fc_velocity_bound} m/s")
             else:
-                print("[GMR][FootContact] WARNING: no valid contact points found, limit disabled.")
+                print("[COLMO][FootContact] WARNING: no valid contact points found, limit disabled.")
 
         self.floor_gid = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_GEOM, "floor")
         foot_geoms_cfg = cfg.get('foot_geoms', {})
@@ -796,7 +796,7 @@ class GeneralMotionRetargeting:
         # means the HARD limits (config + collision) conflict on their own. Skip this
         # iteration's update rather than crashing with NoSolutionFound.
         if self.verbose:
-            print(f"[GMR][SoftAccel] DAQP exitflag={flag}: hard limits infeasible, "
+            print(f"[COLMO][SoftAccel] DAQP exitflag={flag}: hard limits infeasible, "
                   f"skipping IK update this iteration.")
         return np.zeros(nv)
 

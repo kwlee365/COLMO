@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a Python package for motion retargeting to humanoid robots. Install in development mode:
 
 ```bash
-conda create -n gmr python=3.10 -y
-conda activate gmr
+conda create -n colmo python=3.10 -y
+conda activate colmo
 pip install -e .
 conda install -c conda-forge libstdcxx-ng -y
 ```
@@ -17,17 +17,17 @@ conda install -c conda-forge libstdcxx-ng -y
 
 ### Core Components
 
-- **`GeneralMotionRetargeting`** (`general_motion_retargeting/motion_retarget.py`): Main class for motion retargeting using inverse kinematics (IK) solver built on mink/mujoco
-- **`KinematicsModel`** (`general_motion_retargeting/kinematics_model.py`): Handles robot kinematics calculations
-- **`RobotMotionViewer`** (`general_motion_retargeting/robot_motion_viewer.py`): MuJoCo-based visualization for robot motions
-- **Configuration System** (`general_motion_retargeting/params.py`): Simplified robot definitions and IK config mappings - cleaned to focus on core supported robots
+- **`CollisionFreeMotionRetargeting`** (`collision_free_motion_retargeting/motion_retarget.py`): Main class for motion retargeting using inverse kinematics (IK) solver built on mink/mujoco
+- **`KinematicsModel`** (`collision_free_motion_retargeting/kinematics_model.py`): Handles robot kinematics calculations
+- **`RobotMotionViewer`** (`collision_free_motion_retargeting/robot_motion_viewer.py`): MuJoCo-based visualization for robot motions
+- **Configuration System** (`collision_free_motion_retargeting/params.py`): Simplified robot definitions and IK config mappings - cleaned to focus on core supported robots
 
 ### Data Flow
 
 1. **Human Motion Input**: SMPL-X (AMASS/OMOMO) or BVH (LAFAN1) format
 2. **Motion Format**: Each frame = dict of (human_body_name, 3D translation + rotation)
 3. **Robot Output**: Tuple of (base_translation, base_rotation, joint_positions)
-4. **IK Configs**: JSON files in `general_motion_retargeting/ik_configs/` define human-to-robot body mappings
+4. **IK Configs**: JSON files in `collision_free_motion_retargeting/ik_configs/` define human-to-robot body mappings
 
 ### Supported Robots
 
@@ -74,9 +74,9 @@ Add `--record_video --video_path <output.mp4>` to any visualization command to r
 ## File Organization
 
 - `scripts/`: Entry point scripts for different retargeting workflows
-- `general_motion_retargeting/`: Core library code
+- `collision_free_motion_retargeting/`: Core library code
 - `assets/`: Robot models (MuJoCo XML) and body models (SMPL-X)
-- `general_motion_retargeting/ik_configs/`: JSON configuration files for human-to-robot body mappings:
+- `collision_free_motion_retargeting/ik_configs/`: JSON configuration files for human-to-robot body mappings:
   - SMPL-X configs: `smplx_to_{g1,h1}.json`
   - BVH configs: `bvh_lafan1_to_g1.json`, `bvh_{nokov,xsens}_to_g1.json`
   - FBX configs: `fbx_offline_to_g1.json`

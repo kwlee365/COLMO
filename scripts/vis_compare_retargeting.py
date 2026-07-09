@@ -18,7 +18,7 @@ Example
     python scripts/vis_compare_retargeting.py --motion dance1_subject1 \
         --algos colmo gmr --record_video --video_path videos/dance1.mp4
 
-The layout mirrors ``scripts/vis_gmr_with_bvh.py``: the human skeleton is drawn
+The layout mirrors ``scripts/vis_colmo_with_bvh.py``: the human skeleton is drawn
 with ``user_scn`` markers (red joints, yellow bones) while the robots are real
 MJCF meshes composed into one model via ``mujoco.MjSpec`` attachment.
 """
@@ -38,10 +38,10 @@ from loop_rate_limiters import RateLimiter
 from rich import print
 from tqdm import tqdm
 
-from general_motion_retargeting import (
+from collision_free_motion_retargeting import (
     ROBOT_XML_DICT, ROBOT_BASE_DICT, IK_CONFIG_DICT)
-from general_motion_retargeting.utils.lafan1 import load_bvh_file
-from general_motion_retargeting.utils.lafan_vendor.extract import read_bvh
+from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file
+from collision_free_motion_retargeting.utils.lafan_vendor.extract import read_bvh
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -172,7 +172,7 @@ def mirror_root(root_pos, root_rot_wxyz):
 
 
 def build_effective_scale(bones, parents, base_scale):
-    """Per-bone scale, mirroring GMR.scale_human_data / vis_gmr_with_bvh.
+    """Per-bone scale, mirroring GMR.scale_human_data / vis_colmo_with_bvh.
 
     Bones absent from the JSON ``human_scale_table`` inherit their nearest
     scaled ancestor's factor (BVH order guarantees parents precede children),
@@ -539,7 +539,7 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
 
             # Per-bone scale, exactly as GMR would build it for this robot: read
             # the same IK-config human_scale_table and rescale it by the actual
-            # human height, so the drawn skeleton matches vis_gmr_with_bvh.py.
+            # human height, so the drawn skeleton matches vis_colmo_with_bvh.py.
             with open(IK_CONFIG_DICT[f"bvh_{args.format}"][args.robot],
                       encoding="utf-8") as f:
                 ik_config = json.load(f)
@@ -707,7 +707,7 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
     def draw_overlays(scene):
         """Draw the human skeleton and floating algorithm labels into a scene."""
         # Human skeleton (markers + bones), scaled to robot proportions (like
-        # vis_gmr_with_bvh) and turned to face the camera, at its column.
+        # vis_colmo_with_bvh) and turned to face the camera, at its column.
         if human:
             frames = human["frames"]
             frame = frames[min(cur_i, human["n"] - 1)]
@@ -718,7 +718,7 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             scaled_root = eff_scale.get(h_root, 1.0) * raw_root
 
             def rp(bone):
-                # Scale about the root (vis_gmr_with_bvh convention), then rotate
+                # Scale about the root (vis_colmo_with_bvh convention), then rotate
                 # the whole skeleton about the frame-0 root's vertical line.
                 local = (np.asarray(frame[bone][0]) - raw_root) \
                     * eff_scale.get(bone, 1.0)

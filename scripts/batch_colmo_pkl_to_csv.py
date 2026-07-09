@@ -5,9 +5,9 @@ import os
 import numpy as np
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert GMR pickle files to CSV (for beyondmimic)")
+    parser = argparse.ArgumentParser(description="Convert COLMO pickle files to CSV (for beyondmimic)")
     parser.add_argument(
-        "--folder", type=str, help="Path to the folder containing pickle files from GMR",
+        "--folder", type=str, help="Path to the folder containing pickle files from COLMO",
     )
     args = parser.parse_args()
 

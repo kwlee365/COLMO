@@ -27,7 +27,7 @@ Common flags: `--robot {unitree_g1, unitree_h1}`, `--collision_mode {cbf, issf, 
 | `vis_robot_motion.py` | Play back a single robot-motion `.pkl` (minimal viewer, optional recording). |
 | `vis_robot_motion_dataset.py` | 3-mode viewer for a folder of pkls: `interactive` (browse with `[`/`]`), `batch` (record each to mp4 via one subprocess per motion), `single`. |
 | `vis_bvh_motion.py` | Render just the **input BVH skeleton** in an empty MuJoCo world (input sanity-check; no retargeting). |
-| `vis_gmr_with_bvh.py` | Show the retargeted robot next to / overlaid on the source BVH skeleton; draws IK targets, keypoints, and offsets for debugging the human→robot matching. |
+| `vis_colmo_with_bvh.py` | Show the retargeted robot next to / overlaid on the source BVH skeleton; draws IK targets, keypoints, and offsets for debugging the human→robot matching. |
 | `vis_robot_urdf.py` | **IsaacGym** utility: load a robot asset and print rigid-body / DOF names (asset inspection; unrelated to the retargeting pipeline, requires `isaacgym`). |
 
 ## Data conversion (pre-/post-processing)
@@ -36,8 +36,8 @@ Common flags: `--robot {unitree_g1, unitree_h1}`, `--collision_mode {cbf, issf, 
 |--------|------|
 | `convert_omomo_to_smplx.py` | Split the raw OMOMO dataset into per-sequence SMPL-X `.pkl` files (hardcoded paths). |
 | `smpl_to_smplx.py` | Normalize SMPL `.npz` → SMPL-X format (pad betas, rename keys, split poses). Single-file or folder batch. |
-| `npz_to_pkl.py` | Convert a holosoma robot-motion `.npz` (qpos) → GMR `.pkl` format so it can be replayed. |
-| `batch_gmr_pkl_to_csv.py` | Batch-convert retargeted `.pkl` → beyondmimic CSV (`root_pos + root_rot + dof_pos`, down-sampled to 30 fps). |
+| `npz_to_pkl.py` | Convert a holosoma robot-motion `.npz` (qpos) → COLMO `.pkl` format so it can be replayed. |
+| `batch_colmo_pkl_to_csv.py` | Batch-convert retargeted `.pkl` → beyondmimic CSV (`root_pos + root_rot + dof_pos`, down-sampled to 30 fps). |
 
 ## Typical workflow
 

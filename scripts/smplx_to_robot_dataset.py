@@ -13,10 +13,10 @@ from rich import print
 import torch
 import pickle
 
-from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting.utils.smpl import load_smplx_file, get_smplx_data_offline_fast
-from general_motion_retargeting.kinematics_model import KinematicsModel
-from general_motion_retargeting import IK_CONFIG_ROOT
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
+from collision_free_motion_retargeting.utils.smpl import load_smplx_file, get_smplx_data_offline_fast
+from collision_free_motion_retargeting.kinematics_model import KinematicsModel
+from collision_free_motion_retargeting import IK_CONFIG_ROOT
 import gc
 import time
 import psutil
@@ -76,7 +76,7 @@ def process_file(smplx_file_path, tgt_file_path, tgt_robot, SMPLX_FOLDER, tgt_fo
         return
     
     # retarget
-    retargeter = GMR(
+    retargeter = COLMO(
         src_human="smplx",
         tgt_robot=tgt_robot,
         actual_human_height=actual_human_height,

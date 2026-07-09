@@ -23,8 +23,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from smplx.joint_names import JOINT_NAMES
 
-from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
+from collision_free_motion_retargeting import RobotMotionViewer
 
 from rich import print
 
@@ -34,7 +34,7 @@ NUM_BODY_JOINTS = 22  # pelvis .. right_wrist (shared between SMPL and SMPL-X)
 
 
 def load_smpl_npz_frames(smpl_file, tgt_fps=30, y_up_to_z_up=True):
-    """Build GMR frames [{joint_name: (pos(3), quat_wxyz(4))}] from a SMPL npz."""
+    """Build COLMO frames [{joint_name: (pos(3), quat_wxyz(4))}] from a SMPL npz."""
     data = np.load(smpl_file, allow_pickle=True)
     joints = data["joints_world"].astype(np.float64)   # (T, 24, 3) global positions
     rotmat = data["pose_rotmat"].astype(np.float64)     # (T, 24, 3, 3) local rotations
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     print(f"Loaded {len(smpl_frames)} frames at {aligned_fps:.2f} fps, "
           f"human height ~{actual_human_height:.3f} m")
 
-    retarget = GMR(
+    retarget = COLMO(
         actual_human_height=actual_human_height,
         src_human="smplx",
         tgt_robot=args.robot,

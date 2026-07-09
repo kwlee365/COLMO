@@ -10,9 +10,9 @@ import torch
 from tqdm import tqdm
 from rich import print
 
-from general_motion_retargeting.utils.lafan1 import load_bvh_file as load_lafan1_file
-from general_motion_retargeting.kinematics_model import KinematicsModel
-from general_motion_retargeting import GeneralMotionRetargeting as GMR
+from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file as load_lafan1_file
+from collision_free_motion_retargeting.kinematics_model import KinematicsModel
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
 
 
 def collect_bvh_files(src_folder: str):
@@ -50,7 +50,7 @@ def process_one_bvh(
         raise RuntimeError("No frames after slicing")
 
     # Init retarget (table mode: JSON human_scale_table, height-ratio scaled).
-    retarget = GMR(
+    retarget = COLMO(
         src_human="bvh_lafan1",
         tgt_robot=robot,
         actual_human_height=actual_human_height,

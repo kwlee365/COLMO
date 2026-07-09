@@ -1,9 +1,9 @@
 import argparse
 import pathlib
 import time
-from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer
-from general_motion_retargeting.utils.lafan1 import load_bvh_file
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
+from collision_free_motion_retargeting import RobotMotionViewer
+from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file
 from rich import print
 from tqdm import tqdm
 import os
@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
     # Initialize the retargeting system (table mode: JSON human_scale_table,
     # height-ratio scaled by actual_human_height).
-    retargeter = GMR(
+    retargeter = COLMO(
         src_human=f"bvh_{args.format}",
         tgt_robot=args.robot,
         actual_human_height=actual_human_height,

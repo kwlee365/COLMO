@@ -1,8 +1,8 @@
 import argparse
 import pathlib
 import time
-from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
+from collision_free_motion_retargeting import RobotMotionViewer
 from rich import print
 from tqdm import tqdm
 import os
@@ -14,7 +14,7 @@ def load_optitrack_fbx_motion_file(motion_file):
         motion_data = pickle.load(f)
     return motion_data
 
-def offset_to_ground(retargeter: GMR, motion_data):
+def offset_to_ground(retargeter: COLMO, motion_data):
     offset = np.inf
     for human_data in motion_data:
         human_data = retargeter.to_numpy(human_data)
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     
     
     # Initialize the retargeting system with fbx configuration
-    retargeter = GMR(
+    retargeter = COLMO(
         src_human="fbx_offline",  # Use the new fbx configuration
         tgt_robot=args.robot,
         actual_human_height=1.8,
