@@ -1,9 +1,9 @@
 # Robot body group definitions and self-collision limit parameters
 parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
-  damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
+  damping: 0.0              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
-  velocity_limit : 20       # joint velocity cap [rad/s] (only if use_velocity_limit)
+  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
   solver : daqp             # QP backend passed to mink.solve_ik
   warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
@@ -21,6 +21,18 @@ parameters:
   # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
   # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
   acceleration_softness : 1.0e-6
+  # Enable (true) / disable (false) the SOFT acceleration constraint (soft-only).
+  acceleration_limit_soft : true
+
+  # Apply the joint POSITION and VELOCITY limits as SOFT DAQP rows too (like accel),
+  # so the QP never goes infeasible and they yield minimally only where they would
+  # fight the hard collision CBF. NOTE: soft position limits mean the robot may exceed
+  # its joint ranges. Set either to false to keep that limit hard.
+  position_limit_soft : true
+  velocity_limit_soft : true
+  # Extend the velocity/acceleration soft limits to the free/floating-base 6 DoFs.
+  base_velocity_limit : 10
+  base_acceleration_limit : 300000
 
   cbf_gain : 0.0015 # alpha = 1.5
   issf_epsilon : 600.0

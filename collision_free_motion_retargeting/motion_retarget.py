@@ -220,25 +220,26 @@ class AccelerationLimit(mink.Limit):
     Because it lives inside the same QP as the collision limits, the solver keeps
     collision safety (the CBF) AND the acceleration bound simultaneously.
 
-    Floating-base DoFs are ignored (mirrors mink.VelocityLimit).
+    The free/floating-base joint IS supported: list it in ``accelerations`` and all
+    6 base DoFs (3 translation + 3 rotation) get the given bound. ``mj_differentiatePos``
+    handles the quaternion tangent for the rotational DoFs.
     """
 
     def __init__(self, model, accelerations):
         """
         Args:
             model: MuJoCo model.
-            accelerations: dict joint_name -> max |qddot| ([rad]/[s^2] for hinge,
-                [m]/[s^2] for slide).
+            accelerations: dict joint_name -> max |qddot| ([rad]/[s^2] for hinge/ball
+                rotation, [m]/[s^2] for slide/base translation). A free joint contributes
+                its 6 base DoFs with the given (broadcast) bound.
         """
         self.model = model
         limit_list, index_list = [], []
         for joint_name, max_acc in accelerations.items():
             jid = model.joint(joint_name).id
             jnt_type = model.jnt_type[jid]
-            if jnt_type == mj.mjtJoint.mjJNT_FREE:
-                raise ValueError(f"Free joint {joint_name} is not supported")
             vadr = model.jnt_dofadr[jid]
-            vdim = dof_width(int(jnt_type))
+            vdim = 6 if jnt_type == mj.mjtJoint.mjJNT_FREE else dof_width(int(jnt_type))
             max_acc = np.atleast_1d(max_acc)
             index_list.extend(range(vadr, vadr + vdim))
             limit_list.extend(np.broadcast_to(max_acc, (vdim,)).tolist())
@@ -273,6 +274,28 @@ class AccelerationLimit(mink.Limit):
         G = np.vstack([self.projection_matrix, -self.projection_matrix])
         h = np.hstack([vprev_dt + a_dt2 - d_lim, -vprev_dt + a_dt2 + d_lim])
         return mink.Constraint(G=G, h=h)
+
+
+class VelocityLimitAllDof(mink.Limit):
+    """Per-iteration velocity box  |Δq| <= v_max * dt  over ALL DoFs, including the
+    free/floating base (which mink.VelocityLimit skips). ``v_max_per_dof`` is a length-nv
+    array; np.inf entries are left unconstrained. Applied SOFT (DAQP sense=8) in
+    _solve_ik_soft, so it yields minimally when it would fight a hard collision wall.
+    """
+
+    def __init__(self, model, v_max_per_dof):
+        self.model = model
+        v = np.asarray(v_max_per_dof, dtype=float)
+        self.indices = np.where(np.isfinite(v))[0]
+        self.vmax = v[self.indices]
+        self.projection_matrix = np.eye(model.nv)[self.indices] if len(self.indices) else None
+
+    def compute_qp_inequalities(self, configuration, dt):
+        if self.projection_matrix is None:
+            return mink.Constraint()
+        h = self.vmax * dt
+        G = np.vstack([self.projection_matrix, -self.projection_matrix])
+        return mink.Constraint(G=G, h=np.hstack([h, h]))
 
 
 class CollisionFreeMotionRetargeting:
@@ -365,8 +388,12 @@ class CollisionFreeMotionRetargeting:
         self.task_to_human_body1 = {}
         self.task_to_human_body2 = {}
 
-        # Initialize IK constraints starting with joint configuration limits
-        self.ik_limits = [mink.ConfigurationLimit(self.model)]
+        # HARD inequality limits (collision CBF, foot contact, and position/velocity
+        # when NOT configured soft) are appended below. The joint-configuration (position)
+        # limit object is created here; whether it goes hard or soft is decided after the
+        # YAML params are loaded (see position_limit_soft).
+        self.ik_limits = []
+        self.config_limit = mink.ConfigurationLimit(self.model)
 
         # Load robot-specific collision parameters from an external YAML file
         collision_cfg_path = ASSET_ROOT / tgt_robot / "collision_cfg.yaml"
@@ -420,49 +447,91 @@ class CollisionFreeMotionRetargeting:
         self.collision_margin = params.get('margin', None)
         self.collision_detect_dist = params.get('detect_dist', None)
 
+        # --- Soft-limit configuration -------------------------------------------------
+        # Position (joint-config), velocity, and acceleration limits can each be applied
+        # as SOFT DAQP constraints (sense=8, shared rho_soft) instead of hard walls, so
+        # the QP never goes infeasible and they yield MINIMALLY only where they would
+        # fight a hard collision / foot-contact constraint. Opt-in per robot via YAML.
+        # NOTE: soft position limits mean the robot MAY exceed its joint ranges.
+        self.position_limit_soft = bool(params.get('position_limit_soft', False))
+        self.velocity_limit_soft = bool(params.get('velocity_limit_soft', False))
+        # Optional bounds for the free/floating-base 6 DoFs (translation m/s(^2), rotation
+        # rad/s(^2)); None -> base left unconstrained for that limit.
+        self.base_velocity_limit = params.get('base_velocity_limit', None)
+        self.base_acceleration_limit = params.get('base_acceleration_limit', None)
+
+        # Resolve actuated joints (name, dof_adr, dof_width) and the free-base DoFs once.
+        actuated = []
+        for a_id in range(self.model.nu):
+            j_id = int(self.model.actuator_trnid[a_id, 0])
+            if j_id < 0:
+                continue
+            j_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, j_id)
+            if j_name is None:
+                continue
+            actuated.append((j_name, int(self.model.jnt_dofadr[j_id]),
+                             dof_width(int(self.model.jnt_type[j_id]))))
+        base_dofs, base_joint_name = [], None
+        for j_id in range(self.model.njnt):
+            if self.model.jnt_type[j_id] == mj.mjtJoint.mjJNT_FREE:
+                adr = int(self.model.jnt_dofadr[j_id])
+                base_dofs = list(range(adr, adr + 6))
+                base_joint_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, j_id)
+                break
+
+        # --- Velocity limit -----------------------------------------------------------
+        self.velocity_limit_obj = None
         if use_velocity_limit:
-            VELOCITY_LIMITS = {}
-            for a_id in range(self.model.nu):
-                j_id = int(self.model.actuator_trnid[a_id, 0])
-                if j_id < 0:
-                    continue
-                j_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, j_id)
-                if j_name is None:
-                    continue
-                VELOCITY_LIMITS[j_name] = self.vel_limit
+            if self.velocity_limit_soft:
+                v_max = np.full(self.model.nv, np.inf)
+                for _, dadr, w in actuated:
+                    v_max[dadr:dadr + w] = self.vel_limit
+                if self.base_velocity_limit is not None:
+                    for d in base_dofs:
+                        v_max[d] = float(self.base_velocity_limit)
+                self.velocity_limit_obj = VelocityLimitAllDof(self.model, v_max)  # SOFT
+            else:
+                VELOCITY_LIMITS = {n: self.vel_limit for n, _, _ in actuated}
+                self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS))  # HARD
 
-            # Hard velocity bound
-            self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS))
-
-        # Per-frame acceleration bound |q_dot - q_dot_prev| <= a_max*dt on the actuated
-        # joints. Applied as a SOFT QP constraint (DAQP sense=8) rather than a hard
-        # inequality: it is honoured exactly whenever feasible but yields (minimal
-        # violation) when it would otherwise conflict with the hard collision CBF or a
-        # joint limit, so the QP never becomes infeasible. NOT added to self.ik_limits;
-        # the soft rows are injected in _solve_ik_soft_accel(). Opt-in via
-        # parameters.acceleration_limit; softness via parameters.acceleration_softness
-        # (DAQP rho_soft: smaller -> nearer-hard / stronger smoothing, larger -> softer).
+        # --- Acceleration limit (soft only) -------------------------------------------
+        # Per-frame cap |q_dot - q_dot_prev| <= a_max*dt, applied as a SOFT DAQP constraint
+        # (sense=8) so the QP never becomes infeasible. Enable/disable with the
+        # acceleration_limit_soft boolean; acceleration_limit sets the magnitude and
+        # base_acceleration_limit adds the base 6 DoFs. Softness via acceleration_softness
+        # (rho_soft, shared by all soft rows; smaller -> nearer-hard).
+        self.acceleration_limit_soft = bool(params.get('acceleration_limit_soft', True))
         self.accel_limit = None
         self.accel_rho_soft = float(params.get('acceleration_softness', 1e-6))
-        if self.acc_limit is not None and float(self.acc_limit) > 0.0:
-            ACCEL_LIMITS = {}
-            for a_id in range(self.model.nu):
-                j_id = int(self.model.actuator_trnid[a_id, 0])
-                if j_id < 0:
-                    continue
-                j_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, j_id)
-                if j_name is None:
-                    continue
-                ACCEL_LIMITS[j_name] = float(self.acc_limit)
+        if self.acceleration_limit_soft and self.acc_limit is not None and float(self.acc_limit) > 0.0:
+            ACCEL_LIMITS = {n: float(self.acc_limit) for n, _, _ in actuated}
+            if self.base_acceleration_limit is not None and base_joint_name is not None:
+                ACCEL_LIMITS[base_joint_name] = float(self.base_acceleration_limit)
             self.accel_limit = AccelerationLimit(self.model, ACCEL_LIMITS)
-        # Previous-frame joint velocity (tangent space) consumed by the accel limit.
+        # Previous-frame velocity (tangent space) consumed by the accel limit.
         self._accel_v_prev = np.zeros(self.model.nv)
+
+        # --- Assemble hard vs soft sets -----------------------------------------------
+        # Position/velocity may be HARD (self.ik_limits) or SOFT (self._soft_limits, DAQP
+        # sense=8); acceleration is soft-only. Collision / foot-contact stay hard.
+        if not self.position_limit_soft:
+            self.ik_limits.append(self.config_limit)                 # position: HARD
+        self._soft_limits = []
+        if self.position_limit_soft:
+            self._soft_limits.append(self.config_limit)
+        if self.velocity_limit_obj is not None:                      # set only when vel soft
+            self._soft_limits.append(self.velocity_limit_obj)
+        if self.accel_limit is not None:                             # soft-only
+            self._soft_limits.append(self.accel_limit)
 
         if verbose:
             print(f"[COLMO] Final Parameters ->  Damping: {self.damping}, Max Iterations: {self.max_iter}")
-            print(f"Velocity Limit: {self.vel_limit}")
-            print(f"[COLMO] Acceleration Limit (soft): "
-                  f"{f'{self.acc_limit} (rho_soft={self.accel_rho_soft})' if self.accel_limit is not None else 'off'}")
+            print(f"[COLMO] Position limit: {'SOFT' if self.position_limit_soft else 'hard'} | "
+                  f"Velocity limit: {self.vel_limit} ({'SOFT' if self.velocity_limit_soft else 'hard'}, "
+                  f"base={self.base_velocity_limit}) | soft rho_soft={self.accel_rho_soft}")
+            accel_status = ('off' if self.accel_limit is None else
+                            f"{self.acc_limit} (base={self.base_acceleration_limit})")
+            print(f"[COLMO] Acceleration limit (soft): {accel_status}")
             print(f"[COLMO] Collision mode: {self.collision_mode} "
                   f"(constraint={self.use_collision_constraint}"
                   f"{f', issf_epsilon={self.issf_epsilon}' if self.use_issf else ''})")
@@ -744,19 +813,20 @@ class CollisionFreeMotionRetargeting:
                     print(msg)
 
     def _solve_ik(self, tasks, dt):
-        """Velocity from one IK QP solve. Routes through the soft-acceleration solver
-        when the accel limit is active, otherwise mink's standard hard-only solve."""
-        if self.accel_limit is not None:
-            return self._solve_ik_soft_accel(tasks, dt)
+        """Velocity from one IK QP solve. Routes through the soft-constraint solver when
+        any soft limit (position / velocity / acceleration) is configured, otherwise
+        mink's standard hard-only solve."""
+        if self._soft_limits:
+            return self._solve_ik_soft(tasks, dt)
         return mink.solve_ik(self.configuration, tasks, dt, self.solver,
                              damping=self.damping, limits=self.ik_limits)
 
-    def _solve_ik_soft_accel(self, tasks, dt):
-        """Solve the IK QP with the acceleration limit injected as DAQP SOFT
-        constraints (sense=8). The hard rows (config / collision CBF / velocity / foot
-        limits in self.ik_limits) stay hard; the acceleration box rows are soft, so the
-        QP is always feasible and the accel bound is violated only (and minimally) where
-        it would otherwise conflict with a hard wall. Returns v = Δq/dt.
+    def _solve_ik_soft(self, tasks, dt):
+        """Solve the IK QP with the configured soft limits injected as DAQP SOFT rows
+        (sense=8, sharing rho_soft). The hard rows (collision CBF / foot contact, plus
+        position/velocity when not configured soft — all in self.ik_limits) stay hard, so
+        the QP is always feasible and each soft limit is violated only (and minimally)
+        where it would otherwise conflict with a hard wall. Returns v = Δq/dt.
 
         Mirrors mink.build_ik's objective/inequality assembly, then calls daqp directly
         so the per-row constraint `sense` can be set (mink/qpsolvers expose no soft flag).
@@ -764,17 +834,19 @@ class CollisionFreeMotionRetargeting:
         cfg = self.configuration
         H, c = _compute_qp_objective(cfg, tasks, self.damping)
         G_hard, h_hard = _compute_qp_inequalities(cfg, self.ik_limits, dt)
-        accel_cons = self.accel_limit.compute_qp_inequalities(cfg, dt)
 
         G_list, h_list, sense_list = [], [], []
         if G_hard is not None:
             G_list.append(G_hard)
             h_list.append(h_hard)
             sense_list.append(np.zeros(h_hard.shape[0], dtype=c_int))      # 0 = hard
-        if not accel_cons.inactive:
-            G_list.append(accel_cons.G)
-            h_list.append(accel_cons.h)
-            sense_list.append(np.full(accel_cons.h.shape[0], 8, dtype=c_int))  # 8 = soft
+        for lim in self._soft_limits:
+            cons = lim.compute_qp_inequalities(cfg, dt)
+            if cons.inactive:
+                continue
+            G_list.append(cons.G)
+            h_list.append(cons.h)
+            sense_list.append(np.full(cons.h.shape[0], 8, dtype=c_int))    # 8 = soft
 
         nv = self.model.nv
         if G_list:
@@ -792,11 +864,11 @@ class CollisionFreeMotionRetargeting:
         )
         if flag > 0:                       # 1 = optimal, 2 = soft-optimal (both solved)
             return x / dt
-        # A soft accel constraint cannot by itself make the QP infeasible, so flag<=0
-        # means the HARD limits (config + collision) conflict on their own. Skip this
-        # iteration's update rather than crashing with NoSolutionFound.
+        # Soft constraints cannot by themselves make the QP infeasible, so flag<=0 means
+        # the HARD limits (collision CBF / foot contact, plus any hard position/velocity)
+        # conflict on their own. Skip this iteration's update rather than crashing.
         if self.verbose:
-            print(f"[COLMO][SoftAccel] DAQP exitflag={flag}: hard limits infeasible, "
+            print(f"[COLMO][SoftIK] DAQP exitflag={flag}: hard limits infeasible, "
                   f"skipping IK update this iteration.")
         return np.zeros(nv)
 

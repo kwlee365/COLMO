@@ -73,7 +73,7 @@ MUJOCO_LOG.TXT
 *.log
 
 # Session files
-session*.json
+# session*.json
 
 # Temporary files
 *.tmp

@@ -322,7 +322,20 @@ if __name__ == "__main__":
                 draw_sphere(viewer, world_pos, radius=radius, rgba=rgba,
                             label=label)
                 if not args.hide_axes:
-                    draw_frame_axes(viewer, world_pos, quat, size=args.axes_size)
+                    # Draw the keypoint frame in the ROBOT convention: apply the IK
+                    # rot_offset (human bone frame -> robot body frame) so the human
+                    # keypoint axes overlap the matching robot key-body axes when
+                    # tracking is correct. (Raw BVH axes differ from the robot body
+                    # frame by this fixed rot_offset, so any REMAINING divergence is
+                    # the actual IK orientation-tracking error.)  Non-keypoint bones
+                    # have no rot_offset and are still drawn in their raw BVH frame.
+                    draw_quat = quat
+                    rot_off = retargeter.rot_offsets1.get(
+                        bone_name, retargeter.rot_offsets2.get(bone_name))
+                    if rot_off is not None:
+                        draw_quat = (R.from_quat(quat, scalar_first=True) * rot_off
+                                     ).as_quat(scalar_first=True)
+                    draw_frame_axes(viewer, world_pos, draw_quat, size=args.axes_size)
 
             for child_name, parent_name in edges:
                 child_pos = _scaled_pos(child_name) + human_offset
