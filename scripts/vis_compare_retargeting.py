@@ -191,6 +191,32 @@ def build_effective_scale(bones, parents, base_scale):
     return eff
 
 
+def build_keypoint_edges(bones, parents, keypoint_set):
+    """Reduced skeleton over ``keypoint_set``: connect each keypoint to its NEAREST
+    ancestor keypoint in the raw bone hierarchy (skipping non-keypoint bones), so a
+    clean connected sub-skeleton is drawn even when the chosen keypoints are not
+    directly adjacent (e.g. LeftArm -> LeftShoulder -> Spine2 collapses to LeftArm ->
+    Spine2). Computed keybodies ending in 'FootMod' stand in for their raw 'Foot' bone.
+    Returns a list of (child_kp, parent_kp) name pairs."""
+    name_to_idx = {b: i for i, b in enumerate(bones)}
+    kp_to_raw, raw_to_kp = {}, {}
+    for kp in keypoint_set:
+        raw = kp[:-3] if kp.endswith("FootMod") else kp   # LeftFootMod -> LeftFoot
+        if raw in name_to_idx:
+            kp_to_raw[kp] = raw
+            raw_to_kp[raw] = kp
+    edges = []
+    for kp, raw in kp_to_raw.items():
+        p = parents[name_to_idx[raw]]
+        while p >= 0:
+            anc = bones[p]
+            if anc in raw_to_kp:
+                edges.append((kp, raw_to_kp[anc]))
+                break
+            p = parents[p]
+    return edges
+
+
 # ---------------------------------------------------------------------------
 # Scene drawing helpers. They operate on a generic ``mjvScene`` so the same
 # calls populate both the interactive ``viewer.user_scn`` and the offscreen
@@ -340,6 +366,17 @@ def main():
     parser.add_argument("--format", choices=["lafan1", "nokov"], default="lafan1")
     parser.add_argument("--no_human", action="store_true",
                         help="Do not draw the BVH human skeleton.")
+    parser.add_argument("--keypoints", nargs="+", default=None, metavar="BONE",
+                        help="If given, draw the human skeleton markers ONLY for these "
+                             "bone names (e.g. --keypoints Hips LeftHand RightHand "
+                             "LeftFoot RightFoot Head). A bone (capsule) is drawn only "
+                             "when BOTH of its endpoints are in the list. Default: draw "
+                             "the full skeleton.")
+    parser.add_argument("--keypoints_from_config", action="store_true",
+                        help="Draw markers only for the retarget keybodies, i.e. the "
+                             "keys of human_scale_table in the robot's IK config JSON "
+                             "(bvh_<format>_to_<robot>.json). Takes precedence over "
+                             "--keypoints.")
 
     # Layout / playback.
     parser.add_argument("--spacing", type=float, default=1.5,
@@ -360,6 +397,11 @@ def main():
                         help="Do not recolor the robots per algorithm.")
     parser.add_argument("--no_labels", action="store_true",
                         help="Hide the floating algorithm labels.")
+    parser.add_argument("--label_offset", type=float, nargs=3,
+                        default=[0.0, 0.0, 0.22], metavar=("X", "Y", "Z"),
+                        help="Offset (m) of the motion-name label from the human's head "
+                             "(default: 0 0 0.22 = 0.22 m straight up). Raise Z to lift "
+                             "it, use X/Y to slide it sideways.")
 
     # Facing. Different algorithms store the root in different world
     # conventions, so by default we rotate every character (robots + human) so
@@ -560,15 +602,48 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                     Rz_human = R.from_euler(
                         "z", target_yaw - _heading_yaw(fwd))
 
-            human = dict(frames=frames, bones=bones, edges=edges,
+            human = dict(frames=frames, bones=bones, edges=edges, parents=parents,
                          n=len(frames), height=height,
                          eff_scale=eff_scale, h_root=h_root,
-                         pivot=pivot, Rz=Rz_human)
+                         pivot=pivot, Rz=Rz_human,
+                         # Retarget keybodies = the IK config's human_scale_table keys
+                         # (used by --keypoints_from_config). May include computed bodies
+                         # like LeftFootMod that are present in the frames but not raw bones.
+                         scale_bones=list(ik_config["human_scale_table"].keys()))
             print(f"[red]BVH human[/red]: {bvh_path.name} "
                   f"({len(frames)} frames, height {height:.2f} m)")
         else:
             print(f"[yellow]BVH {bvh_path} not found, human skeleton disabled."
                   f"[/yellow]")
+
+    # Optional keypoint filter: when set, only these bones get a marker, and a
+    # bone-capsule is drawn only between two shown keypoints. None -> full skeleton.
+    # --keypoints_from_config (IK config human_scale_table keys) wins over --keypoints.
+    keypoint_set = None
+    if args.keypoints_from_config:
+        if human is not None:
+            keypoint_set = set(human["scale_bones"])
+            print(f"[cyan]keypoints from IK config human_scale_table: "
+                  f"{sorted(keypoint_set)}[/cyan]")
+        else:
+            print("[yellow]--keypoints_from_config ignored (no human skeleton).[/yellow]")
+    elif args.keypoints:
+        keypoint_set = set(args.keypoints)
+    if keypoint_set is not None and human is not None:
+        # Validate against the bones present in the motion frames (which, unlike the raw
+        # BVH bones, include computed keybodies such as LeftFootMod).
+        valid = set(human["frames"][0].keys())
+        unknown = keypoint_set - valid
+        if unknown:
+            print(f"[yellow]keypoints: unknown bone(s) {sorted(unknown)}. "
+                  f"Valid: {sorted(valid)}[/yellow]")
+
+    # Bones to draw between the kept keypoints: a reduced skeleton connecting each
+    # keypoint to its nearest ancestor keypoint (so the sub-skeleton stays connected).
+    keypoint_edges = None
+    if keypoint_set is not None and human is not None:
+        keypoint_edges = build_keypoint_edges(
+            human["bones"], human["parents"], keypoint_set)
 
     # --- Column layout ------------------------------------------------------
     # Human (if any) sits at column 0, robots follow. Columns are centered on
@@ -727,17 +802,24 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             def wp(bone):
                 return rp(bone) + shift
 
-            for bone in human["bones"]:
+            # Iterate the keypoint set directly (so computed keybodies like LeftFootMod,
+            # absent from raw bones but present in the frame, still draw); else full skeleton.
+            marker_bones = human["bones"] if keypoint_set is None else keypoint_set
+            for bone in marker_bones:
                 if bone not in frame:
                     continue
                 if bone == h_root:
                     add_sphere(scene, wp(bone), 0.045, HUMAN_ROOT_COLOR)
                 else:
                     add_sphere(scene, wp(bone), 0.030, HUMAN_JOINT_COLOR)
-            for child, parent in human["edges"]:
+            # Full skeleton edges, or the reduced keypoint sub-skeleton when filtering.
+            draw_edges = human["edges"] if keypoint_set is None else keypoint_edges
+            for child, parent in draw_edges:
+                if child not in frame or parent not in frame:
+                    continue
                 add_capsule(scene, wp(parent), wp(child), 0.012, HUMAN_BONE_COLOR)
             if not args.no_labels and "Head" in frame:
-                add_sphere(scene, wp("Head") + np.array([0, 0, 0.22]),
+                add_sphere(scene, wp("Spine2") + np.array([0, 0, 0.15]),
                            0.05, HUMAN_LABEL_COLOR,
                            label=f"{motion}"
                         #    label=f"BVH (human): {motion}"

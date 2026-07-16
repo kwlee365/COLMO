@@ -388,10 +388,10 @@ class CollisionFreeMotionRetargeting:
         self.task_to_human_body1 = {}
         self.task_to_human_body2 = {}
 
-        # HARD inequality limits (collision CBF, foot contact, and position/velocity
-        # when NOT configured soft) are appended below. The joint-configuration (position)
-        # limit object is created here; whether it goes hard or soft is decided after the
-        # YAML params are loaded (see position_limit_soft).
+        # HARD inequality limits (collision CBF, foot contact, and the joint-configuration
+        # position limit) are appended below. The position-limit object is created here and
+        # added to self.ik_limits once the YAML params are loaded; velocity may be hard or
+        # soft (see velocity_limit_soft).
         self.ik_limits = []
         self.config_limit = mink.ConfigurationLimit(self.model)
 
@@ -416,6 +416,29 @@ class CollisionFreeMotionRetargeting:
         # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (soft QP
         # limit, see AccelerationLimit). None/<=0 disables it.
         self.acc_limit = params.get('acceleration_limit', None)
+        # Optional PER-JOINT overrides of the global acceleration_limit (joint_name ->
+        # max |qddot|, rad/s^2). Any actuated joint NOT listed keeps the global value.
+        self.acc_limit_per_joint = params.get('acceleration_limit_per_joint', {}) or {}
+
+        # --- Posture (nullspace) regularization ---------------------------------------
+        # joint_name -> cost (low weight) and joint_name -> neutral target angle [rad].
+        # A single mink.PostureTask carrying these per-DOF costs is added to the IK task
+        # stack in setup_retarget_configuration(). Because its cost is LOW compared with
+        # the FrameTask orientation costs, it only acts in the task NULLSPACE (and where a
+        # tracking task goes singular / saturates), biasing the listed joints toward their
+        # neutral angle. This breaks the reduced-DOF orientation local-minimum trap: e.g.
+        # tracking shoulder_roll_link orientation drives only pitch+roll (yaw is a child
+        # link), so a backward arm swing saturates shoulder pitch at its limit (+1.249)
+        # and the local velocity-level IK cannot climb back out; the posture pull toward
+        # neutral supplies the restoring gradient. Empty dict -> disabled.
+        self.posture_cost_cfg = params.get('posture_cost', {}) or {}
+        self.posture_target_cfg = params.get('posture_target', {}) or {}
+        # Optional STATE-DEPENDENT scheduling of the posture cost (see setup_retarget_
+        # configuration / _apply_posture_schedule). When enabled, each joint's cost is not
+        # constant but ramps from `min_cost` (at its target) up to its posture_cost value
+        # (at its upper joint limit, toward which it traps) as a function of the current
+        # angle -- a one-sided soft barrier. Disabled -> constant posture_cost.
+        self.posture_schedule_cfg = params.get('posture_schedule', {}) or {}
 
         # Collision-avoidance mode switch. Priority: explicit constructor arg >
         # YAML parameters.collision_mode > default "issf". See COLLISION_MODES.
@@ -448,17 +471,12 @@ class CollisionFreeMotionRetargeting:
         self.collision_detect_dist = params.get('detect_dist', None)
 
         # --- Soft-limit configuration -------------------------------------------------
-        # Position (joint-config), velocity, and acceleration limits can each be applied
-        # as SOFT DAQP constraints (sense=8, shared rho_soft) instead of hard walls, so
-        # the QP never goes infeasible and they yield MINIMALLY only where they would
-        # fight a hard collision / foot-contact constraint. Opt-in per robot via YAML.
-        # NOTE: soft position limits mean the robot MAY exceed its joint ranges.
-        self.position_limit_soft = bool(params.get('position_limit_soft', False))
+        # The VELOCITY and ACCELERATION limits can be applied as SOFT DAQP constraints
+        # (sense=8, shared rho_soft) instead of hard walls, so the QP never goes
+        # infeasible and they yield MINIMALLY only where they would fight a hard
+        # collision / foot-contact constraint. The POSITION (joint-config) limit is
+        # always HARD, so the robot never exceeds its joint ranges.
         self.velocity_limit_soft = bool(params.get('velocity_limit_soft', False))
-        # Optional bounds for the free/floating-base 6 DoFs (translation m/s(^2), rotation
-        # rad/s(^2)); None -> base left unconstrained for that limit.
-        self.base_velocity_limit = params.get('base_velocity_limit', None)
-        self.base_acceleration_limit = params.get('base_acceleration_limit', None)
 
         # Resolve actuated joints (name, dof_adr, dof_width) and the free-base DoFs once.
         actuated = []
@@ -471,54 +489,58 @@ class CollisionFreeMotionRetargeting:
                 continue
             actuated.append((j_name, int(self.model.jnt_dofadr[j_id]),
                              dof_width(int(self.model.jnt_type[j_id]))))
-        base_dofs, base_joint_name = [], None
+        base_dofs = []
         for j_id in range(self.model.njnt):
             if self.model.jnt_type[j_id] == mj.mjtJoint.mjJNT_FREE:
                 adr = int(self.model.jnt_dofadr[j_id])
                 base_dofs = list(range(adr, adr + 6))
-                base_joint_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, j_id)
                 break
 
         # --- Velocity limit -----------------------------------------------------------
         self.velocity_limit_obj = None
         if use_velocity_limit:
             if self.velocity_limit_soft:
+                # SOFT box over all DoFs: the same velocity_limit on the actuated joints
+                # AND the free/floating-base 6 DoFs; any other DoF is left unconstrained.
                 v_max = np.full(self.model.nv, np.inf)
                 for _, dadr, w in actuated:
                     v_max[dadr:dadr + w] = self.vel_limit
-                if self.base_velocity_limit is not None:
-                    for d in base_dofs:
-                        v_max[d] = float(self.base_velocity_limit)
+                for d in base_dofs:
+                    v_max[d] = self.vel_limit
                 self.velocity_limit_obj = VelocityLimitAllDof(self.model, v_max)  # SOFT
             else:
                 VELOCITY_LIMITS = {n: self.vel_limit for n, _, _ in actuated}
                 self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS))  # HARD
 
         # --- Acceleration limit (soft only) -------------------------------------------
-        # Per-frame cap |q_dot - q_dot_prev| <= a_max*dt, applied as a SOFT DAQP constraint
-        # (sense=8) so the QP never becomes infeasible. Enable/disable with the
-        # acceleration_limit_soft boolean; acceleration_limit sets the magnitude and
-        # base_acceleration_limit adds the base 6 DoFs. Softness via acceleration_softness
-        # (rho_soft, shared by all soft rows; smaller -> nearer-hard).
+        # Per-frame cap |q_dot - q_dot_prev| <= a_max*dt on the ACTUATED joints only,
+        # applied as a SOFT DAQP constraint (sense=8) so the QP never becomes infeasible.
+        # Enable/disable with the acceleration_limit_soft boolean; acceleration_limit sets
+        # the DEFAULT magnitude for every actuated joint, and acceleration_limit_per_joint
+        # overrides it for named joints. Softness via acceleration_softness (rho_soft,
+        # shared by all soft rows; smaller -> nearer-hard).
         self.acceleration_limit_soft = bool(params.get('acceleration_limit_soft', True))
         self.accel_limit = None
         self.accel_rho_soft = float(params.get('acceleration_softness', 1e-6))
         if self.acceleration_limit_soft and self.acc_limit is not None and float(self.acc_limit) > 0.0:
             ACCEL_LIMITS = {n: float(self.acc_limit) for n, _, _ in actuated}
-            if self.base_acceleration_limit is not None and base_joint_name is not None:
-                ACCEL_LIMITS[base_joint_name] = float(self.base_acceleration_limit)
+            # Per-joint overrides: must name an actuated joint; unknown names warn + skip.
+            for jname, jacc in self.acc_limit_per_joint.items():
+                if jname in ACCEL_LIMITS:
+                    ACCEL_LIMITS[jname] = float(jacc)
+                else:
+                    print(f"[COLMO][Accel] WARNING: acceleration_limit_per_joint '{jname}' "
+                          f"is not an actuated joint, skipping.")
             self.accel_limit = AccelerationLimit(self.model, ACCEL_LIMITS)
         # Previous-frame velocity (tangent space) consumed by the accel limit.
         self._accel_v_prev = np.zeros(self.model.nv)
 
         # --- Assemble hard vs soft sets -----------------------------------------------
-        # Position/velocity may be HARD (self.ik_limits) or SOFT (self._soft_limits, DAQP
-        # sense=8); acceleration is soft-only. Collision / foot-contact stay hard.
-        if not self.position_limit_soft:
-            self.ik_limits.append(self.config_limit)                 # position: HARD
+        # Position limit is ALWAYS hard (like collision / foot-contact). Velocity may be
+        # HARD (self.ik_limits) or SOFT (self._soft_limits, DAQP sense=8); acceleration is
+        # soft-only.
+        self.ik_limits.append(self.config_limit)                     # position: HARD
         self._soft_limits = []
-        if self.position_limit_soft:
-            self._soft_limits.append(self.config_limit)
         if self.velocity_limit_obj is not None:                      # set only when vel soft
             self._soft_limits.append(self.velocity_limit_obj)
         if self.accel_limit is not None:                             # soft-only
@@ -526,11 +548,11 @@ class CollisionFreeMotionRetargeting:
 
         if verbose:
             print(f"[COLMO] Final Parameters ->  Damping: {self.damping}, Max Iterations: {self.max_iter}")
-            print(f"[COLMO] Position limit: {'SOFT' if self.position_limit_soft else 'hard'} | "
-                  f"Velocity limit: {self.vel_limit} ({'SOFT' if self.velocity_limit_soft else 'hard'}, "
-                  f"base={self.base_velocity_limit}) | soft rho_soft={self.accel_rho_soft}")
-            accel_status = ('off' if self.accel_limit is None else
-                            f"{self.acc_limit} (base={self.base_acceleration_limit})")
+            print(f"[COLMO] Position limit: hard | "
+                  f"Velocity limit: {self.vel_limit} ({'SOFT' if self.velocity_limit_soft else 'hard'}) | "
+                  f"soft rho_soft={self.accel_rho_soft}")
+            accel_status = ('off' if self.accel_limit is None else f"{self.acc_limit}"
+                            + (f" | per-joint: {self.acc_limit_per_joint}" if self.acc_limit_per_joint else ""))
             print(f"[COLMO] Acceleration limit (soft): {accel_status}")
             print(f"[COLMO] Collision mode: {self.collision_mode} "
                   f"(constraint={self.use_collision_constraint}"
@@ -750,6 +772,67 @@ class CollisionFreeMotionRetargeting:
             self.tasks2_targets.append(task)
             self.tasks2_solver.append(task)
 
+        # ----------------------------
+        # Posture (nullspace) regularizer
+        # ----------------------------
+        # One low-cost mink.PostureTask biases the joints in self.posture_cost_cfg toward
+        # a neutral posture (self.posture_target_cfg, default 0 rad = model qpos0). It is
+        # appended to BOTH stage solver lists (tasks{1,2}_solver) but NOT the *_targets
+        # lists: its target is CONSTANT (set once here) and it is a regularizer, not a
+        # per-frame tracking target, so update_targets()/error{1,2}() must skip it.
+        # Per-DOF cost is 0 everywhere except the listed joints, so it never perturbs the
+        # other DoFs and stays subordinate to the FrameTask tracking (cost << ori cost).
+        # posture_cost value is the MAX cost. With scheduling off it is applied constantly;
+        # with scheduling on it is only reached at the joint's upper limit (see
+        # _apply_posture_schedule). self._posture_sched holds one row per scheduled joint.
+        self.posture_task = None
+        self._posture_sched = []
+        self.posture_schedule_enabled = bool(self.posture_schedule_cfg.get('enabled', False))
+        sched_min = float(self.posture_schedule_cfg.get('min_cost', 0.0))
+        sched_power = float(self.posture_schedule_cfg.get('power', 1.0))
+        # Dead-zone: joint angle at which the cost STARTS rising above min_cost. Below it
+        # the cost is min_cost (free tracking); it ramps min->max over [ramp_start, q_hi].
+        # Default 0.0 -> ramp begins at the neutral target. Raise it to let the arm swing
+        # further back before the barrier engages.
+        sched_start = float(self.posture_schedule_cfg.get('ramp_start', 0.0))
+        # When true, retarget() prints the live per-frame (pitch, frac, scheduled cost) for
+        # each scheduled joint -- a debugging aid to see whether/where the barrier engages.
+        self.posture_schedule_debug = bool(self.posture_schedule_cfg.get('debug', False))
+        if self.posture_cost_cfg:
+            cost = np.zeros(self.model.nv)
+            target_q = self.model.qpos0.copy()
+            applied = []
+            for jname, jcost in self.posture_cost_cfg.items():
+                jid = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_JOINT, jname)
+                if jid == -1:
+                    print(f"[COLMO][Posture] WARNING: joint '{jname}' not found, skipping.")
+                    continue
+                dof_adr = int(self.model.jnt_dofadr[jid])
+                qpos_adr = int(self.model.jnt_qposadr[jid])
+                target = float(self.posture_target_cfg.get(jname, 0.0))
+                q_hi = float(self.model.jnt_range[jid][1])          # upper joint limit
+                cost_max = float(jcost)
+                target_q[qpos_adr] = target
+                # Under scheduling start at min_cost (rest pitch ~ target); the constant
+                # path uses cost_max directly. _apply_posture_schedule() updates it per solve.
+                cost[dof_adr] = sched_min if self.posture_schedule_enabled else cost_max
+                self._posture_sched.append((dof_adr, qpos_adr, sched_start, q_hi,
+                                            cost_max, sched_min, sched_power, jname))
+                applied.append((jname, cost_max, target, q_hi))
+            if applied:
+                self.posture_task = mink.PostureTask(self.model, cost=cost)
+                self.posture_task.set_target(target_q)
+                self.tasks1_solver.append(self.posture_task)
+                self.tasks2_solver.append(self.posture_task)
+                if self.verbose:
+                    if self.posture_schedule_enabled:
+                        print(f"[COLMO] PostureTask (SCHEDULED) enabled | min={sched_min} "
+                              f"power={sched_power} | "
+                              f"{[(n, f'max={c}', f'target={t:.2f}', f'q_hi={h:.3f}') for n, c, t, h in applied]}")
+                    else:
+                        print(f"[COLMO] PostureTask (constant) enabled | "
+                              f"{[(n, f'cost={c}', f'target={t:.2f}rad') for n, c, t, _ in applied]}")
+
 
     def update_targets(self, human_data):
         # scale/offset human data
@@ -812,10 +895,35 @@ class CollisionFreeMotionRetargeting:
                            f"Dist:{dist:.4f} (Limit:{current_limit:.3f}) | CenterDist:{c_dist:.4f}")
                     print(msg)
 
+    def _apply_posture_schedule(self):
+        """State-dependent posture cost. For each scheduled joint, ramp its posture cost
+        from cost_min (at its target) up to cost_max (at its UPPER joint limit) as a
+        function of the CURRENT joint angle:
+
+            frac = clip((q - target) / (q_upper - target), 0, 1)
+            cost = cost_min + (cost_max - cost_min) * frac**power
+
+        This is a ONE-SIDED soft barrier: below/at the target the cost is cost_min (~0, so
+        tracking is free), and it grows only as the joint approaches the limit toward which
+        it traps (positive/backward pitch), where it pulls hard back toward neutral. Called
+        every IK iteration so the cost tracks the evolving configuration. No-op when
+        scheduling is disabled (the constant cost_max set at construction stays)."""
+        if not self.posture_schedule_enabled or self.posture_task is None:
+            return
+        q = self.configuration.q
+        for dof_adr, qpos_adr, ramp_start, q_hi, cost_max, cost_min, power, _jname in self._posture_sched:
+            span = q_hi - ramp_start
+            if span <= 0.0:
+                continue
+            frac = (q[qpos_adr] - ramp_start) / span
+            frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
+            self.posture_task.cost[dof_adr] = cost_min + (cost_max - cost_min) * (frac ** power)
+
     def _solve_ik(self, tasks, dt):
         """Velocity from one IK QP solve. Routes through the soft-constraint solver when
         any soft limit (position / velocity / acceleration) is configured, otherwise
         mink's standard hard-only solve."""
+        self._apply_posture_schedule()
         if self._soft_limits:
             return self._solve_ik_soft(tasks, dt)
         return mink.solve_ik(self.configuration, tasks, dt, self.solver,
@@ -905,6 +1013,7 @@ class CollisionFreeMotionRetargeting:
 
         if not self._warmup_done:
             for _ in range(self._warmup_iters):
+                self._apply_posture_schedule()   # keep scheduled cost consistent during warmup
                 vel = mink.solve_ik(
                     self.configuration,
                     self.tasks1_solver,
@@ -940,6 +1049,20 @@ class CollisionFreeMotionRetargeting:
             mj.mj_differentiatePos(self.model, v_now, dt, self._accel_q_start,
                                    self.configuration.q)
             self._accel_v_prev = v_now
+
+        # Debug: print the live scheduled posture cost per frame so it is easy to see
+        # whether/where the barrier engages (e.g. pitch stuck high while cost is still ~0
+        # means `power` is too steep / `ramp_start` too high). One line per frame.
+        if self.posture_schedule_enabled and self.posture_schedule_debug and self.posture_task is not None:
+            q = self.configuration.q
+            parts = []
+            for dof_adr, qpos_adr, ramp_start, q_hi, cost_max, cost_min, power, jname in self._posture_sched:
+                span = q_hi - ramp_start
+                frac = 0.0 if span <= 0.0 else (q[qpos_adr] - ramp_start) / span
+                frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
+                parts.append(f"{jname}: q={q[qpos_adr]:+.3f}/{q_hi:.3f} "
+                             f"frac={frac:.2f} cost={self.posture_task.cost[dof_adr]:6.2f}")
+            print(f"[COLMO][PostureSched] {' | '.join(parts)}")
 
         qpos = self.configuration.data.qpos.copy()
         return qpos

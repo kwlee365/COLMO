@@ -1,7 +1,7 @@
 # Robot body group definitions and self-collision limit parameters
 parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
-  damping: 0.0              # Levenberg-Marquardt regularization of the IK QP
+  damping: 0.05              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
   velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
@@ -24,18 +24,46 @@ parameters:
   # Enable (true) / disable (false) the SOFT acceleration constraint (soft-only).
   acceleration_limit_soft : true
 
-  # Apply the joint POSITION and VELOCITY limits as SOFT DAQP rows too (like accel),
-  # so the QP never goes infeasible and they yield minimally only where they would
-  # fight the hard collision CBF. NOTE: soft position limits mean the robot may exceed
-  # its joint ranges. Set either to false to keep that limit hard.
-  position_limit_soft : true
+  # Apply the joint VELOCITY limit as SOFT DAQP rows (like accel), so the QP never
+  # goes infeasible and it yields minimally only where it would fight the hard
+  # collision CBF. The POSITION (joint-config) limit is always HARD -- the robot never
+  # exceeds its joint ranges. When soft, the same velocity_limit is also applied to the
+  # free/floating-base 6 DoFs (translation m/s, rotation rad/s).
   velocity_limit_soft : true
-  # Extend the velocity/acceleration soft limits to the free/floating-base 6 DoFs.
-  base_velocity_limit : 10
-  base_acceleration_limit : 300000
 
   cbf_gain : 0.0015 # alpha = 1.5
   issf_epsilon : 600.0
+
+  # --- Posture (nullspace) regularization ---------------------------------------
+  # Low-weight bias of selected joints toward a neutral angle, added as a single
+  # mink.PostureTask to BOTH IK stages. Fixes the reduced-DOF orientation trap:
+  # tracking shoulder_roll_link orientation drives only pitch+roll (yaw is a child
+  # link), so a BACKWARD arm swing saturates shoulder pitch at its +0.873 rad limit
+  # and the local velocity-level IK cannot climb back out -> the arm stays stuck
+  # behind the body. The posture term supplies a restoring pull toward neutral in the
+  # task nullspace, breaking the trap. A CONSTANT cost trades off trap-escape vs tracking
+  # (weak = stays stuck, strong = pitch frozen), so posture_schedule (below) is used: this
+  # value is the MAX cost, reached only at the joint limit. Map is joint_name -> max cost.
+  posture_cost:
+    left_shoulder_pitch_joint: 50.0
+    right_shoulder_pitch_joint: 50.0
+  # Neutral target angle [rad] per joint the posture task biases toward. Default 0.0
+  # (model qpos0, ~arm-down) for any listed joint not given here. Only joints in
+  # posture_cost are affected. Pitch sign: negative = arm forward, positive = arm back.
+  posture_target:
+    left_shoulder_pitch_joint: 0.0
+    right_shoulder_pitch_joint: 0.0
+  # State-dependent posture cost (one-sided soft barrier) -- see the G1 config for the full
+  # formula. cost is min_cost up to ramp_start rad, then ramps to posture_cost at the UPPER
+  # limit (kapex: +0.873 rad). ramp_start is scaled from the G1 sweet spot (0.5/1.249) to
+  # kapex's tighter range -> ~0.35; VERIFY/tune on a kapex clip (raise for more backward
+  # reach, lower if it still sticks). enabled=false -> constant posture_cost.
+  posture_schedule:
+    enabled: true
+    min_cost: 0.0
+    ramp_start: 0.35
+    power: 2.0
+    debug: true          # print live per-frame (pitch, frac, scheduled cost); set false to silence
 
 groups:
   torso: ["Pelvis", "Chest", "Head"]
@@ -65,8 +93,8 @@ collision_limits:
       - ["r_arm", "l_leg"]
       - ["r_arm", "r_leg"]
       - ["r_arm", "l_arm"]
-      - ["l_arm_lower", "torso"]
-      - ["r_arm_lower", "torso"]
+      - ["l_arm", "torso"]
+      - ["r_arm", "torso"]
     margin: 0.0
     detect_dist: 0.05
 
