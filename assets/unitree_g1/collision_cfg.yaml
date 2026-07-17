@@ -3,7 +3,6 @@ parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
   damping: 0.05              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
-  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
   solver : daqp             # QP backend passed to mink.solve_ik
   warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
@@ -13,87 +12,91 @@ parameters:
   ground_offset : 0.0    # per-frame robot ground offset [m] (apply_ground_offset)
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
-  # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
-  # Applied as a SOFT QP constraint (DAQP sense=8): honoured when feasible, yields
-  # minimally to the hard collision CBF / joint limits so the QP never goes infeasible.
-  # Comment out / set <=0 to disable. This is the DEFAULT applied to every actuated joint.
-  acceleration_limit : 300000
-  acceleration_limit_per_joint:
-    left_shoulder_pitch_joint: 100000
-    left_shoulder_roll_joint: 100000
-    left_shoulder_yaw_joint: 100000
-    left_elbow_joint: 100000
-    left_wrist_roll_joint: 100000
-    left_wrist_pitch_joint: 100000
-    left_wrist_yaw_joint: 100000
-    right_shoulder_pitch_joint: 100000
-    right_shoulder_roll_joint: 100000
-    right_shoulder_yaw_joint: 100000
-    right_elbow_joint: 100000
-    right_wrist_roll_joint: 100000
-    right_wrist_pitch_joint: 100000
-    right_wrist_yaw_joint: 100000
 
-  # Optional PER-JOINT overrides of acceleration_limit (joint_name -> max |qddot| rad/s^2).
-  # Any actuated joint NOT listed keeps the default above. Uncomment to use. Example:
-  # acceleration_limit_per_joint:
-  #   left_shoulder_pitch_joint: 50000
-  #   right_shoulder_pitch_joint: 50000
-  # Enable (true) / disable (false) the SOFT acceleration constraint. Acceleration is
-  # soft-only (DAQP sense=8; the QP stays feasible).
-  acceleration_limit_soft : true
-  # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
+  # Enable flags for the three IK limits (a constructor arg, if passed, overrides these).
+  use_velocity_limit : true       # FrameVelocityLimit (real per-frame velocity, frame_velocity_limit)
+  use_acceleration_limit : true   # FrameAccelerationLimit (real per-frame accel, frame_acceleration_limit)
+  use_ik_step_limit : true        # per-iteration IK step clamp (|Δq| <= ik_step_limit * opt.timestep)
+
+  ik_step_limit : 10
+
+  frame_acceleration_limit:
+    # left leg
+    left_hip_pitch_joint: 8800
+    left_hip_roll_joint: 8800
+    left_hip_yaw_joint: 8800
+    left_knee_joint: 13900
+    left_ankle_pitch_joint: 5000
+    left_ankle_roll_joint: 5000
+    # right leg
+    right_hip_pitch_joint: 8800
+    right_hip_roll_joint: 8800
+    right_hip_yaw_joint: 8800
+    right_knee_joint: 13900
+    right_ankle_pitch_joint: 5000
+    right_ankle_roll_joint: 5000
+    # waist
+    waist_yaw_joint: 8800
+    waist_roll_joint: 5000
+    waist_pitch_joint: 5000
+    # left arm
+    left_shoulder_pitch_joint: 2500
+    left_shoulder_roll_joint: 2500
+    left_shoulder_yaw_joint: 2500
+    left_elbow_joint: 2500
+    left_wrist_roll_joint: 2500
+    left_wrist_pitch_joint: 500
+    left_wrist_yaw_joint: 500
+    # right arm
+    right_shoulder_pitch_joint: 2500
+    right_shoulder_roll_joint: 2500
+    right_shoulder_yaw_joint: 2500
+    right_elbow_joint: 2500
+    right_wrist_roll_joint: 2500
+    right_wrist_pitch_joint: 500
+    right_wrist_yaw_joint: 500
   # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
-  # SHARED by all soft rows (position / velocity / acceleration).
   acceleration_softness : 1.0e-6
 
-  # Apply the joint VELOCITY limit as SOFT DAQP rows (like accel), so the QP never
-  # goes infeasible and it yields minimally only where it would fight the hard
-  # collision CBF. The POSITION (joint-config) limit is always HARD -- the robot never
-  # exceeds its joint ranges. When soft, the same velocity_limit is also applied to the
-  # free/floating-base 6 DoFs (translation m/s, rotation rad/s).
-  velocity_limit_soft : true
+  velocity_limit_soft : false
+  frame_velocity_limit:
+    # left leg
+    left_hip_pitch_joint: 32
+    left_hip_roll_joint: 20
+    left_hip_yaw_joint: 32
+    left_knee_joint: 20
+    left_ankle_pitch_joint: 37
+    left_ankle_roll_joint: 37
+    # right leg
+    right_hip_pitch_joint: 32
+    right_hip_roll_joint: 20
+    right_hip_yaw_joint: 32
+    right_knee_joint: 20
+    right_ankle_pitch_joint: 37
+    right_ankle_roll_joint: 37
+    # waist
+    waist_yaw_joint: 32
+    waist_roll_joint: 37
+    waist_pitch_joint: 37
+    # left arm
+    left_shoulder_pitch_joint: 37
+    left_shoulder_roll_joint: 37
+    left_shoulder_yaw_joint: 37
+    left_elbow_joint: 37
+    left_wrist_roll_joint: 37
+    left_wrist_pitch_joint: 22
+    left_wrist_yaw_joint: 22
+    # right arm
+    right_shoulder_pitch_joint: 37
+    right_shoulder_roll_joint: 37
+    right_shoulder_yaw_joint: 37
+    right_elbow_joint: 37
+    right_wrist_roll_joint: 37
+    right_wrist_pitch_joint: 22
+    right_wrist_yaw_joint: 22
 
-  cbf_gain : 0.0015 # alpha = 1.5
+  cbf_gain : 1.5 # alpha = 1.5
   issf_epsilon : 100.0
-
-  # --- Posture (nullspace) regularization ---------------------------------------
-  # Low-weight bias of selected joints toward a neutral angle, added as a single
-  # mink.PostureTask to BOTH IK stages. Fixes the reduced-DOF orientation trap:
-  # tracking shoulder_roll_link orientation drives only pitch+roll (yaw is a child
-  # link), so a BACKWARD arm swing saturates shoulder pitch at its +1.249 rad limit
-  # and the local velocity-level IK cannot climb back out -> the arm stays stuck
-  # behind the body. The posture term supplies a restoring pull toward neutral, breaking
-  # the trap. A CONSTANT cost trades off trap-escape vs tracking (10 is too weak to pull
-  # the arm back once stuck, 50 freezes the pitch near 0), so posture_schedule (below) is
-  # enabled instead: the value here is the MAX cost, reached only at the joint limit.
-  # Map is joint_name -> max cost; comment out / leave empty to disable.
-  posture_cost:
-    left_shoulder_pitch_joint: 200.0
-    right_shoulder_pitch_joint: 200.0
-  # Neutral target angle [rad] per joint the posture task biases toward. Default 0.0
-  # (model qpos0, ~arm-down) for any listed joint not given here. Only joints in
-  # posture_cost are affected. Pitch sign: negative = arm forward, positive = arm back.
-  posture_target:
-    left_shoulder_pitch_joint: 0.0
-    right_shoulder_pitch_joint: 0.0
-  # State-dependent scheduling of the posture cost (one-sided soft barrier). When enabled,
-  # each scheduled joint's cost is NOT constant: it stays at `min_cost` up to `ramp_start`
-  # rad (free backward swing), then ramps up to its posture_cost value at the UPPER joint
-  # limit (the +pitch/backward direction it traps in):
-  #   f = clip((q - ramp_start)/(q_upper - ramp_start), 0, 1);  cost = min_cost + (posture_cost-min_cost)*f**power
-  # So tracking is free in the neutral/forward range and out to ramp_start, and a strong
-  # restoring pull only engages near the backward limit -- fixing BOTH failure modes of a
-  # constant cost (too weak = stays stuck; too strong = pitch frozen). Swept on aiming1:
-  # ramp_start 0.5 / power 2 lets the arm reach +0.89 rad back yet always returns
-  # (never lingers in the >0.9 deep-trap zone); raise ramp_start toward q_upper (1.249) for
-  # more backward reach at the cost of slower return. enabled=false -> constant posture_cost.
-  posture_schedule:
-    enabled: true
-    min_cost: 0.0
-    ramp_start: 0.0
-    power: 2.0
-    debug: false          # print live per-frame (pitch, frac, scheduled cost); set false to silence
 
 groups:
   torso: ["Pelvis", "Chest", "Head"]
@@ -130,11 +133,6 @@ collision_limits:
       - ["r_arm", "l_arm"]
       - ["l_arm_lower", "torso"]
       - ["r_arm_lower", "torso"]
-      # - ["l_leg_lower", "torso"]
-      # - ["r_leg_lower", "torso"]
-      # - ["r_leg_upper", "torso_upper"]
-      # - ["l_leg_upper", "torso_upper"]
-
     margin: 0.0
     detect_dist: 0.05
 
@@ -148,30 +146,3 @@ collision_limits:
       - ["torso", "ground"]
     margin: 0.0
     detect_dist: 0.05
-
-
-# ── Foot contact zero-velocity constraint ─────────────────────────────────────
-# Contact detection is based on human motion position difference per frame:
-#   delta = ||human_pos_t - human_pos_{t-1}||
-# If delta <= threshold * dt  (i.e. human foot speed <= threshold),
-# a hard QP inequality pins the robot foot XY velocity to <= velocity_bound.
-# threshold is in m/s; velocity_bound is in m/s.
-# human_body_name is derived automatically from the IK config (format-agnostic).
-# ──────────────────────────────────────────────────────────────────────────────
-foot_geoms:
-  left:
-    - Left_Foot
-  right:
-    - Right_Foot
-
-foot_contact:
-  enabled: false
-  threshold: 0.3   # m/s (1 cm/s) — contact activates when human foot speed <= this
-  velocity_bound: 0.001 # m/s  — hard XY velocity limit once in contact
-
-  contact_points:
-    - body_name: "left_ankle_roll_link"
-      local_pos: [0.02, 0.0, -0.02]
-
-    - body_name: "right_ankle_roll_link"
-      local_pos: [0.02, 0.0, -0.02]

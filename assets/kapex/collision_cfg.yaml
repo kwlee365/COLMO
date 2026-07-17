@@ -34,37 +34,6 @@ parameters:
   cbf_gain : 0.0015 # alpha = 1.5
   issf_epsilon : 600.0
 
-  # --- Posture (nullspace) regularization ---------------------------------------
-  # Low-weight bias of selected joints toward a neutral angle, added as a single
-  # mink.PostureTask to BOTH IK stages. Fixes the reduced-DOF orientation trap:
-  # tracking shoulder_roll_link orientation drives only pitch+roll (yaw is a child
-  # link), so a BACKWARD arm swing saturates shoulder pitch at its +0.873 rad limit
-  # and the local velocity-level IK cannot climb back out -> the arm stays stuck
-  # behind the body. The posture term supplies a restoring pull toward neutral in the
-  # task nullspace, breaking the trap. A CONSTANT cost trades off trap-escape vs tracking
-  # (weak = stays stuck, strong = pitch frozen), so posture_schedule (below) is used: this
-  # value is the MAX cost, reached only at the joint limit. Map is joint_name -> max cost.
-  posture_cost:
-    left_shoulder_pitch_joint: 50.0
-    right_shoulder_pitch_joint: 50.0
-  # Neutral target angle [rad] per joint the posture task biases toward. Default 0.0
-  # (model qpos0, ~arm-down) for any listed joint not given here. Only joints in
-  # posture_cost are affected. Pitch sign: negative = arm forward, positive = arm back.
-  posture_target:
-    left_shoulder_pitch_joint: 0.0
-    right_shoulder_pitch_joint: 0.0
-  # State-dependent posture cost (one-sided soft barrier) -- see the G1 config for the full
-  # formula. cost is min_cost up to ramp_start rad, then ramps to posture_cost at the UPPER
-  # limit (kapex: +0.873 rad). ramp_start is scaled from the G1 sweet spot (0.5/1.249) to
-  # kapex's tighter range -> ~0.35; VERIFY/tune on a kapex clip (raise for more backward
-  # reach, lower if it still sticks). enabled=false -> constant posture_cost.
-  posture_schedule:
-    enabled: true
-    min_cost: 0.0
-    ramp_start: 0.35
-    power: 2.0
-    debug: true          # print live per-frame (pitch, frac, scheduled cost); set false to silence
-
 groups:
   torso: ["Pelvis", "Chest", "Head"]
   torso_upper: ["Chest", "Head"]
@@ -107,30 +76,3 @@ collision_limits:
       - ["torso", "ground"]
     margin: 0.0
     detect_dist: 0.05
-
-
-# ── Foot contact zero-velocity constraint ─────────────────────────────────────
-# Contact detection is based on human motion position difference per frame:
-#   delta = ||human_pos_t - human_pos_{t-1}||
-# If delta <= threshold * dt  (i.e. human foot speed <= threshold),
-# a hard QP inequality pins the robot foot XY velocity to <= velocity_bound.
-# threshold is in m/s; velocity_bound is in m/s.
-# human_body_name is derived automatically from the IK config (format-agnostic).
-# ──────────────────────────────────────────────────────────────────────────────
-foot_geoms:
-  left:
-    - Left_Foot
-  right:
-    - Right_Foot
-
-foot_contact:
-  enabled: false
-  threshold: 0.3   # m/s (1 cm/s) — contact activates when human foot speed <= this
-  velocity_bound: 0.001 # m/s  — hard XY velocity limit once in contact
-
-  contact_points:
-    - body_name: "left_ankle_roll_link"
-      local_pos: [0.02, 0.0, -0.02]
-
-    - body_name: "right_ankle_roll_link"
-      local_pos: [0.02, 0.0, -0.02]

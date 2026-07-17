@@ -152,7 +152,6 @@ if __name__ == "__main__":
             dof_pos=qpos[7:],
             human_motion_data=retarget.scaled_human_data,
             human_pos_offset=np.array([0.0, 0.0, 0.0]),
-            contact_points=retarget.get_contact_point_positions(),
             show_human_body_name=False,
             rate_limit=args.rate_limit,
             follow_camera=True,

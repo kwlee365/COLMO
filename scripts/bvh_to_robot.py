@@ -155,7 +155,6 @@ if __name__ == "__main__":
                 root_rot=last_qpos[3:7],
                 dof_pos=last_qpos[7:],
                 human_motion_data=retargeter.scaled_human_data,
-                contact_points=retargeter.get_contact_point_positions(),
                 rate_limit=args.rate_limit,
                 follow_camera=True,
             )
@@ -188,7 +187,6 @@ if __name__ == "__main__":
             root_rot=qpos[3:7],
             dof_pos=qpos[7:],
             human_motion_data=retargeter.scaled_human_data,
-            contact_points=retargeter.get_contact_point_positions(),
             rate_limit=args.rate_limit,
             follow_camera=True, #change to True if you want the camera to follow the robot
             # human_pos_offset=np.array([0.0, 0.0, 0.0])

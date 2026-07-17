@@ -86,7 +86,7 @@ class ISSfCollisionAvoidanceLimit(mink.CollisionAvoidanceLimit):
             # Appears as a negative offset on the upper bound in both branches.
             issf_margin = np.linalg.norm(row) ** 2 / eps
             if dist > min_dist:
-                upper_bound[idx] = (cbf_gain * (dist - min_dist) / dt) - issf_margin + self.bound_relaxation
+                upper_bound[idx] = cbf_gain * (dist - min_dist) - issf_margin + self.bound_relaxation
             else:
                 upper_bound[idx] = -issf_margin + self.bound_relaxation
             sign = -1.0 if dist >= 0 else 1.0
@@ -94,155 +94,50 @@ class ISSfCollisionAvoidanceLimit(mink.CollisionAvoidanceLimit):
         return mink.Constraint(G=coefficient_matrix, h=upper_bound)
 
 
-class FootContactLimit(mink.Limit):
-    """
-    Hard foot contact zero-velocity constraint, implemented as QP inequalities.
+class FrameAccelerationLimit(mink.Limit):
+    """Real per-FRAME joint acceleration limit.
 
-    Contact detection is based on the human motion position difference per frame:
+    Caps the change in per-frame velocity so that, per actuated joint,
 
-        delta = ||human_pos_t - human_pos_{t-1}||
+        |v_t - v_{t-1}|  <=  a_max * frame_period,     frame_period = 1 / fps,
 
-    If  delta  <=  threshold * dt  (i.e. human foot speed <= threshold [m/s]):
-        Enforce  |J_c(q)[XY] @ v| <= velocity_bound   (hard QP inequality)
+    where v_t = (qpos_t - qpos_{t-1}) / frame_period is the effective retargeted joint
+    velocity at frame t. Equivalently, on the NET per-frame joint displacement
+    Δqpos_t = qpos_t - qpos_{t-1},
 
-    Two-sided bound  |J_c @ v| <= velocity_bound  in G @ v <= h form.
-    """
-    def __init__(
-        self,
-        model: mj.MjModel,
-        contact_points: list,       # list of (body_id, local_pos_np)
-        human_body_names: list,     # list of human body names, one per contact point
-        threshold: float = 0.01,    # m/s — contact activates when human foot speed <= threshold
-        velocity_bound: float = 0.0,
-        fps: float = 30,            # motion frame rate used to convert threshold m/s -> m/frame
-        name: str = "foot_contact",
-    ):
-        self.model = model
-        self.contact_points = contact_points
-        self.human_body_names = human_body_names
-        self.threshold = threshold
-        self.velocity_bound = velocity_bound  # max contact-point XY velocity [m/s]
-        self.fps = fps
-        self.name = name
-        self._prev_human_pos = {}              # human_body_name -> np.ndarray(3,)
-        self._active_mask = [False] * len(contact_points)  # per-point contact state
+        |Δqpos_t - Δqpos_{t-1}|  <=  a_max * frame_period^2.
 
-    def update_from_human_motion(self, human_data: dict):
-        """Update contact active mask from human motion position differences.
+    Like FrameVelocityLimit, this is a real limit in the MOTION's own time base (T = 1/fps),
+    NOT opt.timestep. The IK QP decision variable is the tangent displacement Δq; with
+    d = q ⊖ q_frame_start (net displacement so far this frame, latched via set_frame) and
+    dq_prev = the previous frame's net displacement Δqpos_{t-1}, this iteration's Δq obeys
 
-        human_data: dict of {human_body_name: (pos, rot)} for the current frame
-        """
-        threshold_pos = self.threshold / self.fps  # m/s threshold -> meters per frame
-        for i, human_name in enumerate(self.human_body_names):
-            if human_name not in human_data:
-                self._active_mask[i] = False
-                continue
-            curr_pos = human_data[human_name][0]  # (3,) position
-            if human_name in self._prev_human_pos:
-                delta = np.linalg.norm(curr_pos - self._prev_human_pos[human_name])
-                self._active_mask[i] = delta <= threshold_pos
-            else:
-                self._active_mask[i] = False  # no previous frame — cannot determine contact
-            self._prev_human_pos[human_name] = curr_pos.copy()
+        dq_prev - a_max*T^2 <= d + Δq <= dq_prev + a_max*T^2.
 
-    def compute_qp_inequalities(
-        self,
-        configuration: mink.Configuration,
-        dt: float,
-    ):
-        model = self.model
-        data = configuration.data
-
-        mj.mj_fwdPosition(model, data)
-
-        G_rows, h_rows = [], []
-        J_pos = np.zeros((3, model.nv))
-        J_rot = np.zeros((3, model.nv))
-
-        for i, (body_id, local_pos) in enumerate(self.contact_points):
-            if not self._active_mask[i]:
-                continue
-
-            body_xpos = data.xpos[body_id]
-            body_xmat = data.xmat[body_id].reshape(3, 3)
-            world_point = body_xpos + body_xmat @ local_pos
-
-            J_pos[:] = 0.0
-            J_rot[:] = 0.0
-            mj.mj_jac(model, data, J_pos, J_rot, world_point, body_id)
-
-            J_xy = J_pos[:2]               # XY rows only, (2, nv)
-            G_rows.append(J_xy)
-            G_rows.append(-J_xy)
-            h_rows.append(np.full(2, self.velocity_bound))
-            h_rows.append(np.full(2, self.velocity_bound))
-
-        if not G_rows:
-            return mink.limits.Constraint()   # inactive (G=None, h=None)
-
-        return mink.limits.Constraint(
-            G=np.vstack(G_rows),
-            h=np.concatenate(h_rows),
-        )
-
-
-def find_geoms(model, names):
-    gids = []
-    for n in names:
-        gid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_GEOM, n)
-        if gid != -1:
-            gids.append(gid)
-    return gids
-
-
-class AccelerationLimit(mink.Limit):
-    """Hard QP limit on the per-frame change in joint velocity (acceleration).
-
-    Enforces, per actuated joint,
-
-        |q_dot - q_dot_prev| <= qddot_max * dt
-
-    where q_dot_prev is the previous frame's joint velocity. The IK QP decision
-    variable is the tangent displacement Δq = q_dot * dt, and this codebase runs
-    several solve_ik iterations per frame (integrating Δq each time). A naive box
-    centered at q_dot_prev*dt would force every later iteration to keep moving at
-    q_dot_prev (breaking convergence), so the bound is written on the NET tangent
-    displacement accumulated since the frame start,
-
-        d = q ⊖ q_frame_start,
-
-    giving, for this iteration's Δq,
-
-        v_prev*dt - a_max*dt^2 <= d + Δq <= v_prev*dt + a_max*dt^2.
-
-    As d approaches the bound the admissible Δq shrinks to zero, so the limit caps
-    the frame velocity jump without preventing the inner loop from converging.
-    Because it lives inside the same QP as the collision limits, the solver keeps
-    collision safety (the CBF) AND the acceleration bound simultaneously.
-
-    The free/floating-base joint IS supported: list it in ``accelerations`` and all
-    6 base DoFs (3 translation + 3 rotation) get the given bound. ``mj_differentiatePos``
-    handles the quaternion tangent for the rotational DoFs.
+    As d approaches the bound the admissible Δq shrinks to zero, capping the frame-to-frame
+    velocity change without breaking the inner-loop convergence, and it shares the QP with
+    the collision CBF. Free/floating-base DoFs are ignored (actuated joints only).
     """
 
-    def __init__(self, model, accelerations):
+    def __init__(self, model, accelerations, frame_period):
         """
         Args:
             model: MuJoCo model.
-            accelerations: dict joint_name -> max |qddot| ([rad]/[s^2] for hinge/ball
-                rotation, [m]/[s^2] for slide/base translation). A free joint contributes
-                its 6 base DoFs with the given (broadcast) bound.
+            accelerations: dict joint_name -> max |qddot| [rad/s^2 hinge, m/s^2 slide].
+            frame_period: motion frame period [s] = 1 / fps.
         """
         self.model = model
+        self.frame_period = float(frame_period)
         limit_list, index_list = [], []
         for joint_name, max_acc in accelerations.items():
             jid = model.joint(joint_name).id
             jnt_type = model.jnt_type[jid]
+            if jnt_type == mj.mjtJoint.mjJNT_FREE:
+                continue                                   # base is not accel-limited here
             vadr = model.jnt_dofadr[jid]
-            vdim = 6 if jnt_type == mj.mjtJoint.mjJNT_FREE else dof_width(int(jnt_type))
-            max_acc = np.atleast_1d(max_acc)
+            vdim = dof_width(int(jnt_type))
             index_list.extend(range(vadr, vadr + vdim))
-            limit_list.extend(np.broadcast_to(max_acc, (vdim,)).tolist())
+            limit_list.extend([float(max_acc)] * vdim)
 
         self.indices = np.array(index_list, dtype=int)
         self.limit = np.array(limit_list, dtype=float)
@@ -251,12 +146,12 @@ class AccelerationLimit(mink.Limit):
 
         # Per-frame state, refreshed once per frame via set_frame().
         self.q_frame_start = None              # qpos at the start of the current frame
-        self.v_prev = np.zeros(model.nv)       # previous frame's tangent velocity
+        self.dq_prev = np.zeros(model.nv)      # previous frame's NET tangent displacement
 
-    def set_frame(self, q_frame_start, v_prev):
-        """Latch the frame-start configuration and the previous frame velocity."""
+    def set_frame(self, q_frame_start, dq_prev):
+        """Latch the frame-start configuration and the previous frame's net displacement."""
         self.q_frame_start = np.array(q_frame_start, dtype=float)
-        self.v_prev = np.array(v_prev, dtype=float)
+        self.dq_prev = np.array(dq_prev, dtype=float)
 
     def compute_qp_inequalities(self, configuration, dt):
         if self.projection_matrix is None or self.q_frame_start is None:
@@ -265,20 +160,91 @@ class AccelerationLimit(mink.Limit):
         d = np.zeros(self.model.nv)
         mj.mj_differentiatePos(self.model, d, 1.0, self.q_frame_start, configuration.q)
 
-        a_dt2 = self.limit * dt * dt                 # a_max * dt^2 (per limited joint)
-        vprev_dt = self.v_prev[self.indices] * dt    # v_prev * dt
+        aT2 = self.limit * self.frame_period * self.frame_period   # a_max * T^2
+        dq_prev_k = self.dq_prev[self.indices]
         d_lim = d[self.indices]
 
-        # +Δq rows:  Δq <=  v_prev*dt + a*dt^2 - d
-        # -Δq rows: -Δq <= -v_prev*dt + a*dt^2 + d
+        # +Δq rows:  Δq <=  dq_prev + a*T^2 - d
+        # -Δq rows: -Δq <= -dq_prev + a*T^2 + d
         G = np.vstack([self.projection_matrix, -self.projection_matrix])
-        h = np.hstack([vprev_dt + a_dt2 - d_lim, -vprev_dt + a_dt2 + d_lim])
+        h = np.hstack([dq_prev_k + aT2 - d_lim, -dq_prev_k + aT2 + d_lim])
+        return mink.Constraint(G=G, h=h)
+
+
+class FrameVelocityLimit(mink.Limit):
+    """Real per-FRAME joint velocity limit.
+
+    Caps the NET joint displacement across the whole IK solve of one motion frame so that
+
+        |qpos_t - qpos_{t-1}|  <=  v_max * frame_period,      frame_period = 1 / fps,
+
+    i.e. the effective retargeted joint velocity never exceeds ``v_max`` [rad/s]. Unlike a
+    per-iteration velocity box (mink.VelocityLimit / VelocityLimitAllDof), which caps each
+    QP step by ``v_max * opt.timestep`` -- a solver-internal step clamp, NOT a real velocity
+    -- this bounds the net frame displacement in the MOTION's own time base.
+
+    Mirrors AccelerationLimit's frame-based formulation. The QP decision variable is the
+    tangent displacement Δq; with d = q ⊖ q_frame_start (net displacement since the frame
+    start, latched via set_frame() once per frame), this iteration's Δq is bounded by
+
+        -v_max*T <= d + Δq <= v_max*T,        T = frame_period.
+
+    As d approaches the bound the admissible Δq shrinks to zero, so the limit caps the frame
+    velocity without breaking the inner-loop convergence. Free/floating-base DoFs are ignored
+    (actuated joints only).
+    """
+
+    def __init__(self, model, velocities, frame_period):
+        """
+        Args:
+            model: MuJoCo model.
+            velocities: dict joint_name -> v_max [rad/s hinge, m/s slide].
+            frame_period: motion frame period [s] = 1 / fps.
+        """
+        self.model = model
+        self.frame_period = float(frame_period)
+        limit_list, index_list = [], []
+        for joint_name, vmax in velocities.items():
+            jid = model.joint(joint_name).id
+            jnt_type = model.jnt_type[jid]
+            if jnt_type == mj.mjtJoint.mjJNT_FREE:
+                continue                                   # base is not velocity-limited here
+            vadr = model.jnt_dofadr[jid]
+            vdim = dof_width(int(jnt_type))
+            index_list.extend(range(vadr, vadr + vdim))
+            limit_list.extend([float(vmax)] * vdim)
+        self.indices = np.array(index_list, dtype=int)
+        self.limit = np.array(limit_list, dtype=float)
+        nb = len(self.indices)
+        self.projection_matrix = np.eye(model.nv)[self.indices] if nb > 0 else None
+        self.q_frame_start = None                          # latched once per frame
+
+    def set_frame(self, q_frame_start):
+        """Latch the previous frame's final configuration (the anchor the net per-frame
+        displacement is measured from)."""
+        self.q_frame_start = np.array(q_frame_start, dtype=float)
+
+    def compute_qp_inequalities(self, configuration, dt):
+        if self.projection_matrix is None or self.q_frame_start is None:
+            return mink.Constraint()
+        # Net tangent displacement so far this frame: d = q ⊖ q_frame_start.
+        d = np.zeros(self.model.nv)
+        mj.mj_differentiatePos(self.model, d, 1.0, self.q_frame_start, configuration.q)
+        cap = self.limit * self.frame_period               # v_max * T  (a displacement bound)
+        d_lim = d[self.indices]
+        # QP variable is Δq; bound the net displacement d + Δq to +/- cap:
+        #   +Δq rows:  Δq <=  cap - d
+        #   -Δq rows: -Δq <=  cap + d
+        G = np.vstack([self.projection_matrix, -self.projection_matrix])
+        h = np.hstack([cap - d_lim, cap + d_lim])
         return mink.Constraint(G=G, h=h)
 
 
 class VelocityLimitAllDof(mink.Limit):
-    """Per-iteration velocity box  |Δq| <= v_max * dt  over ALL DoFs, including the
-    free/floating base (which mink.VelocityLimit skips). ``v_max_per_dof`` is a length-nv
+    """Per-iteration IK step clamp: |Δq| <= v_max * dt (dt = opt.timestep) over ALL DoFs,
+    including the free/floating base (which mink.VelocityLimit skips). This is NOT a real
+    velocity limit -- it clamps each solve_ik iteration's increment to regularize the
+    differential-IK step (the old mink.VelocityLimit role). ``v_max_per_dof`` is a length-nv
     array; np.inf entries are left unconstrained. Applied SOFT (DAQP sense=8) in
     _solve_ik_soft, so it yields minimally when it would fight a hard collision wall.
     """
@@ -307,7 +273,9 @@ class CollisionFreeMotionRetargeting:
         tgt_robot: str,
         actual_human_height: float = None,
         verbose: bool=True,
-        use_velocity_limit: bool=True,
+        use_velocity_limit: bool=None,       # enable FrameVelocityLimit; None -> read from YAML
+        use_acceleration_limit: bool=None,   # enable FrameAccelerationLimit; None -> read from YAML
+        use_ik_step_limit: bool=None,        # enable IK step clamp; None -> read from YAML
         collision_mode: str = None,
     ) -> None:
         self._warmup_done = False
@@ -405,7 +373,10 @@ class CollisionFreeMotionRetargeting:
         # REQUIRED params: must be defined in collision_cfg.yaml or construction fails.
         self.damping = _require_param(params, 'damping')
         self.max_iter = _require_param(params, 'max_iter')
-        self.vel_limit = _require_param(params, 'velocity_limit')
+        # Per-joint velocity limits [rad/s] for the FrameVelocityLimit (real per-frame limit
+        # |qpos_t - qpos_{t-1}| <= v_max/fps). Enabled by the use_velocity_limit constructor
+        # arg; joints NOT listed here are left unconstrained.
+        self.frame_velocity_limit_cfg = params.get('frame_velocity_limit', {}) or {}
         # IK solver / loop tuning, externalized to YAML (back-compat defaults kept).
         self.solver = params.get('solver', 'daqp')
         self._warmup_iters = params.get('warmup_iters', 500)
@@ -413,32 +384,10 @@ class CollisionFreeMotionRetargeting:
         self.lm_damping = params.get('lm_damping', 1.0)        # per-FrameTask LM damping
         self.motion_fps = params.get('motion_fps', 30)         # foot-contact fps assumption
         self.ground_offset = params.get('ground_offset', -0.01)  # per-frame robot ground offset [m]
-        # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (soft QP
-        # limit, see AccelerationLimit). None/<=0 disables it.
-        self.acc_limit = params.get('acceleration_limit', None)
-        # Optional PER-JOINT overrides of the global acceleration_limit (joint_name ->
-        # max |qddot|, rad/s^2). Any actuated joint NOT listed keeps the global value.
-        self.acc_limit_per_joint = params.get('acceleration_limit_per_joint', {}) or {}
-
-        # --- Posture (nullspace) regularization ---------------------------------------
-        # joint_name -> cost (low weight) and joint_name -> neutral target angle [rad].
-        # A single mink.PostureTask carrying these per-DOF costs is added to the IK task
-        # stack in setup_retarget_configuration(). Because its cost is LOW compared with
-        # the FrameTask orientation costs, it only acts in the task NULLSPACE (and where a
-        # tracking task goes singular / saturates), biasing the listed joints toward their
-        # neutral angle. This breaks the reduced-DOF orientation local-minimum trap: e.g.
-        # tracking shoulder_roll_link orientation drives only pitch+roll (yaw is a child
-        # link), so a backward arm swing saturates shoulder pitch at its limit (+1.249)
-        # and the local velocity-level IK cannot climb back out; the posture pull toward
-        # neutral supplies the restoring gradient. Empty dict -> disabled.
-        self.posture_cost_cfg = params.get('posture_cost', {}) or {}
-        self.posture_target_cfg = params.get('posture_target', {}) or {}
-        # Optional STATE-DEPENDENT scheduling of the posture cost (see setup_retarget_
-        # configuration / _apply_posture_schedule). When enabled, each joint's cost is not
-        # constant but ramps from `min_cost` (at its target) up to its posture_cost value
-        # (at its upper joint limit, toward which it traps) as a function of the current
-        # angle -- a one-sided soft barrier. Disabled -> constant posture_cost.
-        self.posture_schedule_cfg = params.get('posture_schedule', {}) or {}
+        # Per-joint acceleration limits [rad/s^2] for the FrameAccelerationLimit (real per-
+        # frame limit |Δqpos_t - Δqpos_{t-1}| <= a_max*(1/fps)^2). Enabled by the
+        # use_acceleration_limit constructor arg; joints NOT listed are left unconstrained.
+        self.frame_acceleration_limit_cfg = params.get('frame_acceleration_limit', {}) or {}
 
         # Collision-avoidance mode switch. Priority: explicit constructor arg >
         # YAML parameters.collision_mode > default "issf". See COLLISION_MODES.
@@ -455,6 +404,14 @@ class CollisionFreeMotionRetargeting:
         self.collision_mode = collision_mode
         self.use_collision_constraint = collision_mode in ("cbf", "issf")
         self.use_issf = collision_mode == "issf"
+
+        # Enable flags for the three IK limits. Priority (same as collision_mode): explicit
+        # constructor arg > YAML parameters.<flag> > built-in default.
+        def _resolve_flag(arg, key, default):
+            return bool(params.get(key, default) if arg is None else arg)
+        self.use_velocity_limit = _resolve_flag(use_velocity_limit, 'use_velocity_limit', True)
+        self.use_acceleration_limit = _resolve_flag(use_acceleration_limit, 'use_acceleration_limit', True)
+        self.use_ik_step_limit = _resolve_flag(use_ik_step_limit, 'use_ik_step_limit', False)
         # ISSf robustness scale (eq. 45): margin = ||J_AB|| / issf_epsilon.
         # Larger epsilon -> milder margin (epsilon -> inf recovers the plain CBF).
         self.issf_epsilon = params.get('issf_epsilon', 50.0)
@@ -477,6 +434,9 @@ class CollisionFreeMotionRetargeting:
         # collision / foot-contact constraint. The POSITION (joint-config) limit is
         # always HARD, so the robot never exceeds its joint ranges.
         self.velocity_limit_soft = bool(params.get('velocity_limit_soft', False))
+        # Magnitude [rad/s] for the per-iteration IK step clamp (use_ik_step_limit): the
+        # per-solve-step increment is bounded by |Δq_iter| <= ik_step_limit * opt.timestep.
+        self.ik_step_limit = float(params.get('ik_step_limit', 20.0))
 
         # Resolve actuated joints (name, dof_adr, dof_width) and the free-base DoFs once.
         actuated = []
@@ -496,44 +456,73 @@ class CollisionFreeMotionRetargeting:
                 base_dofs = list(range(adr, adr + 6))
                 break
 
-        # --- Velocity limit -----------------------------------------------------------
+        actuated_names = {n for n, _, _ in actuated}
+        frame_period = 1.0 / float(self.motion_fps)
+
+        # --- Velocity limit (real per-frame) ------------------------------------------
+        # FrameVelocityLimit caps |qpos_t - qpos_{t-1}| <= v_max/fps per joint. Enabled by
+        # the use_velocity_limit arg; per-joint v_max come from the frame_velocity_limit
+        # config map (joints NOT listed are left unconstrained). soft vs hard via
+        # velocity_limit_soft.
+        self.frame_velocity_limit = None
+        self._vel_limits_map = {}
+        if self.use_velocity_limit:
+            for n, v in self.frame_velocity_limit_cfg.items():
+                if n in actuated_names:
+                    self._vel_limits_map[n] = float(v)
+                else:
+                    print(f"[COLMO][Velocity] WARNING: frame_velocity_limit '{n}' is not "
+                          f"an actuated joint, skipping.")
+            if self._vel_limits_map:
+                self.frame_velocity_limit = FrameVelocityLimit(
+                    self.model, self._vel_limits_map, frame_period=frame_period)
+            elif verbose:
+                print("[COLMO][Velocity] use_velocity_limit=True but frame_velocity_limit is "
+                      "empty -> no velocity limit applied.")
+
+        # --- IK step limit (per-iteration Δq clamp; the old mink.VelocityLimit role) ------
+        # NOT a real velocity limit: clamps each IK solve iteration's increment,
+        # |Δq_iter| <= ik_step_limit * opt.timestep, to regularize the differential-IK step
+        # (prevent large single-iteration jumps). Enabled by use_ik_step_limit; magnitude
+        # ik_step_limit [rad/s]; soft (VelocityLimitAllDof, over actuated + base) vs hard
+        # (mink.VelocityLimit, actuated only) via velocity_limit_soft.
         self.velocity_limit_obj = None
-        if use_velocity_limit:
+        if self.use_ik_step_limit:
             if self.velocity_limit_soft:
-                # SOFT box over all DoFs: the same velocity_limit on the actuated joints
-                # AND the free/floating-base 6 DoFs; any other DoF is left unconstrained.
                 v_max = np.full(self.model.nv, np.inf)
                 for _, dadr, w in actuated:
-                    v_max[dadr:dadr + w] = self.vel_limit
+                    v_max[dadr:dadr + w] = self.ik_step_limit
                 for d in base_dofs:
-                    v_max[d] = self.vel_limit
+                    v_max[d] = self.ik_step_limit
                 self.velocity_limit_obj = VelocityLimitAllDof(self.model, v_max)  # SOFT
             else:
-                VELOCITY_LIMITS = {n: self.vel_limit for n, _, _ in actuated}
-                self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS))  # HARD
+                STEP_LIMITS = {n: self.ik_step_limit for n, _, _ in actuated}
+                self.ik_limits.append(mink.VelocityLimit(self.model, STEP_LIMITS))  # HARD
 
-        # --- Acceleration limit (soft only) -------------------------------------------
-        # Per-frame cap |q_dot - q_dot_prev| <= a_max*dt on the ACTUATED joints only,
-        # applied as a SOFT DAQP constraint (sense=8) so the QP never becomes infeasible.
-        # Enable/disable with the acceleration_limit_soft boolean; acceleration_limit sets
-        # the DEFAULT magnitude for every actuated joint, and acceleration_limit_per_joint
-        # overrides it for named joints. Softness via acceleration_softness (rho_soft,
-        # shared by all soft rows; smaller -> nearer-hard).
-        self.acceleration_limit_soft = bool(params.get('acceleration_limit_soft', True))
+        # --- Acceleration limit (real per-frame, soft only) ---------------------------
+        # FrameAccelerationLimit caps |Δqpos_t - Δqpos_{t-1}| <= a_max*(1/fps)^2 per joint,
+        # applied SOFT (DAQP sense=8) so the QP never becomes infeasible. Enabled by the
+        # use_acceleration_limit arg; per-joint a_max come from the frame_acceleration_limit
+        # config map (joints NOT listed are unconstrained). Softness via acceleration_softness
+        # (rho_soft, shared by all soft rows; smaller -> nearer-hard).
         self.accel_limit = None
+        self._accel_limits_map = {}
         self.accel_rho_soft = float(params.get('acceleration_softness', 1e-6))
-        if self.acceleration_limit_soft and self.acc_limit is not None and float(self.acc_limit) > 0.0:
-            ACCEL_LIMITS = {n: float(self.acc_limit) for n, _, _ in actuated}
-            # Per-joint overrides: must name an actuated joint; unknown names warn + skip.
-            for jname, jacc in self.acc_limit_per_joint.items():
-                if jname in ACCEL_LIMITS:
-                    ACCEL_LIMITS[jname] = float(jacc)
+        if self.use_acceleration_limit:
+            for n, a in self.frame_acceleration_limit_cfg.items():
+                if n in actuated_names:
+                    self._accel_limits_map[n] = float(a)
                 else:
-                    print(f"[COLMO][Accel] WARNING: acceleration_limit_per_joint '{jname}' "
-                          f"is not an actuated joint, skipping.")
-            self.accel_limit = AccelerationLimit(self.model, ACCEL_LIMITS)
-        # Previous-frame velocity (tangent space) consumed by the accel limit.
-        self._accel_v_prev = np.zeros(self.model.nv)
+                    print(f"[COLMO][Accel] WARNING: frame_acceleration_limit '{n}' is not "
+                          f"an actuated joint, skipping.")
+            if self._accel_limits_map:
+                self.accel_limit = FrameAccelerationLimit(
+                    self.model, self._accel_limits_map, frame_period=frame_period)
+            elif verbose:
+                print("[COLMO][Accel] use_acceleration_limit=True but frame_acceleration_limit "
+                      "is empty -> no acceleration limit applied.")
+        # Previous-frame NET tangent displacement consumed by the frame accel limit.
+        self._accel_dq_prev = np.zeros(self.model.nv)
 
         # --- Assemble hard vs soft sets -----------------------------------------------
         # Position limit is ALWAYS hard (like collision / foot-contact). Velocity may be
@@ -541,18 +530,37 @@ class CollisionFreeMotionRetargeting:
         # soft-only.
         self.ik_limits.append(self.config_limit)                     # position: HARD
         self._soft_limits = []
-        if self.velocity_limit_obj is not None:                      # set only when vel soft
+        if self.frame_velocity_limit is not None:                    # real per-frame velocity
+            if self.velocity_limit_soft:
+                self._soft_limits.append(self.frame_velocity_limit)  # SOFT
+            else:
+                self.ik_limits.append(self.frame_velocity_limit)     # HARD
+        if self.velocity_limit_obj is not None:                      # IK step clamp (soft path)
             self._soft_limits.append(self.velocity_limit_obj)
         if self.accel_limit is not None:                             # soft-only
             self._soft_limits.append(self.accel_limit)
 
         if verbose:
             print(f"[COLMO] Final Parameters ->  Damping: {self.damping}, Max Iterations: {self.max_iter}")
-            print(f"[COLMO] Position limit: hard | "
-                  f"Velocity limit: {self.vel_limit} ({'SOFT' if self.velocity_limit_soft else 'hard'}) | "
+            if self.frame_velocity_limit is not None:               # FrameVelocityLimit active
+                lo, hi = float(self.frame_velocity_limit.limit.min()), float(self.frame_velocity_limit.limit.max())
+                vel_desc = (f"FrameVelocityLimit (real, |Δqpos|<=v/fps), v range {lo:g}-{hi:g} rad/s "
+                            f"@ fps={self.motion_fps} ({'SOFT' if self.velocity_limit_soft else 'HARD'}) "
+                            f"| {len(self._vel_limits_map)} joints")
+            else:                                                   # use_velocity_limit off / no joints
+                vel_desc = 'off'
+            print(f"[COLMO] Position limit: hard | Velocity limit: {vel_desc} | "
                   f"soft rho_soft={self.accel_rho_soft}")
-            accel_status = ('off' if self.accel_limit is None else f"{self.acc_limit}"
-                            + (f" | per-joint: {self.acc_limit_per_joint}" if self.acc_limit_per_joint else ""))
+            step_desc = (f"{self.ik_step_limit} rad/s ({'SOFT' if self.velocity_limit_soft else 'hard'})"
+                         if self.use_ik_step_limit else 'off')
+            print(f"[COLMO] IK step limit (per-iteration Δq clamp): {step_desc}")
+            if self.accel_limit is None:
+                accel_status = 'off'
+            else:
+                lo, hi = float(self.accel_limit.limit.min()), float(self.accel_limit.limit.max())
+                accel_status = (f"FrameAccelerationLimit (real, |ΔΔqpos|<=a*(1/fps)^2), a range "
+                                f"{lo:g}-{hi:g} rad/s^2 @ fps={self.motion_fps} "
+                                f"| {len(self._accel_limits_map)} joints")
             print(f"[COLMO] Acceleration limit (soft): {accel_status}")
             print(f"[COLMO] Collision mode: {self.collision_mode} "
                   f"(constraint={self.use_collision_constraint}"
@@ -615,87 +623,7 @@ class CollisionFreeMotionRetargeting:
             if self.use_collision_constraint:
                 self.ik_limits.append(limit_obj)
 
-        # Store foot contact config for setup after ik_match_tables are loaded
-        self._fc_cfg = cfg.get('foot_contact', {})
-
         self.setup_retarget_configuration()
-
-        # Set up foot contact limit after ik_match_tables are available (human body names derived from them)
-        self.foot_contact_limit = None
-        fc_cfg = self._fc_cfg
-        if fc_cfg.get('enabled', False):
-            fc_threshold      = fc_cfg.get('threshold', 0.01)
-            fc_velocity_bound = fc_cfg.get('velocity_bound', 0.0)
-            fc_points_cfg     = fc_cfg.get('contact_points', [])
-
-            # Build reverse mapping: robot_body_name -> human_body_name from IK tables
-            robot_to_human = {}
-            for robot_body, entry in self.ik_match_table1.items():
-                robot_to_human[robot_body] = entry[0]
-            for robot_body, entry in self.ik_match_table2.items():
-                if robot_body not in robot_to_human:
-                    robot_to_human[robot_body] = entry[0]
-
-            contact_points = []
-            human_body_names = []
-            for cp in fc_points_cfg:
-                body_name = cp['body_name']
-                human_body_name = robot_to_human.get(body_name, '')
-                if not human_body_name:
-                    print(f"[COLMO][FootContact] WARNING: '{body_name}' not in IK match tables, skipping.")
-                    continue
-                local_pos = np.array(cp.get('local_pos', [0.0, 0.0, 0.0]), dtype=float)
-                body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, body_name)
-                if body_id == -1:
-                    print(f"[COLMO][FootContact] WARNING: robot body '{body_name}' not found in model, skipping.")
-                    continue
-                contact_points.append((body_id, local_pos))
-                human_body_names.append(human_body_name)
-
-            if contact_points:
-                self.foot_contact_limit = FootContactLimit(
-                    model=self.model,
-                    contact_points=contact_points,
-                    human_body_names=human_body_names,
-                    threshold=fc_threshold,
-                    velocity_bound=fc_velocity_bound,
-                    fps=self.motion_fps,
-                )
-                self.ik_limits.append(self.foot_contact_limit)
-                if verbose:
-                    # contact_points contains resolved (body_id, local_pos); use human_body_names for display
-                    robot_names = [mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, bid) for bid, _ in contact_points]
-                    pairs = list(zip(robot_names, human_body_names))
-                    print(f"[COLMO] FootContactLimit enabled | {pairs} | "
-                          f"threshold: {fc_threshold} m/s | human_fps: {self.motion_fps} Hz | "
-                          f"threshold_pos: {fc_threshold / self.motion_fps * 1000:.3f} mm/frame | "
-                          f"velocity_bound: {fc_velocity_bound} m/s")
-            else:
-                print("[COLMO][FootContact] WARNING: no valid contact points found, limit disabled.")
-
-        self.floor_gid = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_GEOM, "floor")
-        foot_geoms_cfg = cfg.get('foot_geoms', {})
-        left_candidates = foot_geoms_cfg.get('left', [])
-        right_candidates = foot_geoms_cfg.get('right', [])
-
-        if not left_candidates or not right_candidates:
-            raise ValueError(
-                f"'foot_geoms' must be defined in {collision_cfg_path} with non-empty "
-                f"'left' and 'right' lists."
-            )
-
-
-        self.left_foot_gids  = find_geoms(self.model, left_candidates)
-        self.right_foot_gids = find_geoms(self.model, right_candidates)
-
-        if not self.left_foot_gids:
-            raise ValueError(f"No left foot geom found. Tried {left_candidates}")
-        if not self.right_foot_gids:
-            raise ValueError(f"No right foot geom found. Tried {right_candidates}")
-
-        
-
-        assert self.floor_gid != -1, "geom 'floor' not found"
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
@@ -772,67 +700,6 @@ class CollisionFreeMotionRetargeting:
             self.tasks2_targets.append(task)
             self.tasks2_solver.append(task)
 
-        # ----------------------------
-        # Posture (nullspace) regularizer
-        # ----------------------------
-        # One low-cost mink.PostureTask biases the joints in self.posture_cost_cfg toward
-        # a neutral posture (self.posture_target_cfg, default 0 rad = model qpos0). It is
-        # appended to BOTH stage solver lists (tasks{1,2}_solver) but NOT the *_targets
-        # lists: its target is CONSTANT (set once here) and it is a regularizer, not a
-        # per-frame tracking target, so update_targets()/error{1,2}() must skip it.
-        # Per-DOF cost is 0 everywhere except the listed joints, so it never perturbs the
-        # other DoFs and stays subordinate to the FrameTask tracking (cost << ori cost).
-        # posture_cost value is the MAX cost. With scheduling off it is applied constantly;
-        # with scheduling on it is only reached at the joint's upper limit (see
-        # _apply_posture_schedule). self._posture_sched holds one row per scheduled joint.
-        self.posture_task = None
-        self._posture_sched = []
-        self.posture_schedule_enabled = bool(self.posture_schedule_cfg.get('enabled', False))
-        sched_min = float(self.posture_schedule_cfg.get('min_cost', 0.0))
-        sched_power = float(self.posture_schedule_cfg.get('power', 1.0))
-        # Dead-zone: joint angle at which the cost STARTS rising above min_cost. Below it
-        # the cost is min_cost (free tracking); it ramps min->max over [ramp_start, q_hi].
-        # Default 0.0 -> ramp begins at the neutral target. Raise it to let the arm swing
-        # further back before the barrier engages.
-        sched_start = float(self.posture_schedule_cfg.get('ramp_start', 0.0))
-        # When true, retarget() prints the live per-frame (pitch, frac, scheduled cost) for
-        # each scheduled joint -- a debugging aid to see whether/where the barrier engages.
-        self.posture_schedule_debug = bool(self.posture_schedule_cfg.get('debug', False))
-        if self.posture_cost_cfg:
-            cost = np.zeros(self.model.nv)
-            target_q = self.model.qpos0.copy()
-            applied = []
-            for jname, jcost in self.posture_cost_cfg.items():
-                jid = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_JOINT, jname)
-                if jid == -1:
-                    print(f"[COLMO][Posture] WARNING: joint '{jname}' not found, skipping.")
-                    continue
-                dof_adr = int(self.model.jnt_dofadr[jid])
-                qpos_adr = int(self.model.jnt_qposadr[jid])
-                target = float(self.posture_target_cfg.get(jname, 0.0))
-                q_hi = float(self.model.jnt_range[jid][1])          # upper joint limit
-                cost_max = float(jcost)
-                target_q[qpos_adr] = target
-                # Under scheduling start at min_cost (rest pitch ~ target); the constant
-                # path uses cost_max directly. _apply_posture_schedule() updates it per solve.
-                cost[dof_adr] = sched_min if self.posture_schedule_enabled else cost_max
-                self._posture_sched.append((dof_adr, qpos_adr, sched_start, q_hi,
-                                            cost_max, sched_min, sched_power, jname))
-                applied.append((jname, cost_max, target, q_hi))
-            if applied:
-                self.posture_task = mink.PostureTask(self.model, cost=cost)
-                self.posture_task.set_target(target_q)
-                self.tasks1_solver.append(self.posture_task)
-                self.tasks2_solver.append(self.posture_task)
-                if self.verbose:
-                    if self.posture_schedule_enabled:
-                        print(f"[COLMO] PostureTask (SCHEDULED) enabled | min={sched_min} "
-                              f"power={sched_power} | "
-                              f"{[(n, f'max={c}', f'target={t:.2f}', f'q_hi={h:.3f}') for n, c, t, h in applied]}")
-                    else:
-                        print(f"[COLMO] PostureTask (constant) enabled | "
-                              f"{[(n, f'cost={c}', f'target={t:.2f}rad') for n, c, t, _ in applied]}")
-
 
     def update_targets(self, human_data):
         # scale/offset human data
@@ -895,35 +762,10 @@ class CollisionFreeMotionRetargeting:
                            f"Dist:{dist:.4f} (Limit:{current_limit:.3f}) | CenterDist:{c_dist:.4f}")
                     print(msg)
 
-    def _apply_posture_schedule(self):
-        """State-dependent posture cost. For each scheduled joint, ramp its posture cost
-        from cost_min (at its target) up to cost_max (at its UPPER joint limit) as a
-        function of the CURRENT joint angle:
-
-            frac = clip((q - target) / (q_upper - target), 0, 1)
-            cost = cost_min + (cost_max - cost_min) * frac**power
-
-        This is a ONE-SIDED soft barrier: below/at the target the cost is cost_min (~0, so
-        tracking is free), and it grows only as the joint approaches the limit toward which
-        it traps (positive/backward pitch), where it pulls hard back toward neutral. Called
-        every IK iteration so the cost tracks the evolving configuration. No-op when
-        scheduling is disabled (the constant cost_max set at construction stays)."""
-        if not self.posture_schedule_enabled or self.posture_task is None:
-            return
-        q = self.configuration.q
-        for dof_adr, qpos_adr, ramp_start, q_hi, cost_max, cost_min, power, _jname in self._posture_sched:
-            span = q_hi - ramp_start
-            if span <= 0.0:
-                continue
-            frac = (q[qpos_adr] - ramp_start) / span
-            frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
-            self.posture_task.cost[dof_adr] = cost_min + (cost_max - cost_min) * (frac ** power)
-
     def _solve_ik(self, tasks, dt):
         """Velocity from one IK QP solve. Routes through the soft-constraint solver when
         any soft limit (position / velocity / acceleration) is configured, otherwise
         mink's standard hard-only solve."""
-        self._apply_posture_schedule()
         if self._soft_limits:
             return self._solve_ik_soft(tasks, dt)
         return mink.solve_ik(self.configuration, tasks, dt, self.solver,
@@ -1013,7 +855,6 @@ class CollisionFreeMotionRetargeting:
 
         if not self._warmup_done:
             for _ in range(self._warmup_iters):
-                self._apply_posture_schedule()   # keep scheduled cost consistent during warmup
                 vel = mink.solve_ik(
                     self.configuration,
                     self.tasks1_solver,
@@ -1025,16 +866,17 @@ class CollisionFreeMotionRetargeting:
                 self.configuration.integrate_inplace(vel, dt)
             self._warmup_done = True
 
-        # Update foot contact mask once per frame from human motion position differences
-        if self.foot_contact_limit is not None:
-            self.foot_contact_limit.update_from_human_motion(self.scaled_human_data)
-
-        # Acceleration limit: latch the frame-start pose and the previous frame's
-        # velocity so the limit bounds the NET frame velocity jump across all the
-        # inner IK iterations (see AccelerationLimit).
+        # Frame acceleration limit: latch the frame-start pose and the previous frame's NET
+        # displacement so the limit bounds |Δqpos_t - Δqpos_{t-1}| across all the inner IK
+        # iterations (see FrameAccelerationLimit).
         if self.accel_limit is not None:
             self._accel_q_start = self.configuration.q.copy()
-            self.accel_limit.set_frame(self._accel_q_start, self._accel_v_prev)
+            self.accel_limit.set_frame(self._accel_q_start, self._accel_dq_prev)
+
+        # Frame velocity limit: latch the previous frame's final pose as the anchor for the
+        # net per-frame displacement bound |qpos_t - qpos_{t-1}| <= v_max/fps.
+        if self.frame_velocity_limit is not None:
+            self.frame_velocity_limit.set_frame(self.configuration.q.copy())
 
         # Normal IK solve with the configured iteration cap.
         self._solve_ik_stages(dt, self.max_iter)
@@ -1042,47 +884,16 @@ class CollisionFreeMotionRetargeting:
         mj.mj_fwdPosition(self.model, self.configuration.data)
         mj.mj_forward(self.model, self.configuration.data)
 
-        # Store this frame's net joint velocity (q ⊖ q_frame_start)/dt for the next
+        # Store this frame's NET tangent displacement (q ⊖ q_frame_start) for the next
         # frame's acceleration limit.
         if self.accel_limit is not None:
-            v_now = np.zeros(self.model.nv)
-            mj.mj_differentiatePos(self.model, v_now, dt, self._accel_q_start,
+            dq_now = np.zeros(self.model.nv)
+            mj.mj_differentiatePos(self.model, dq_now, 1.0, self._accel_q_start,
                                    self.configuration.q)
-            self._accel_v_prev = v_now
-
-        # Debug: print the live scheduled posture cost per frame so it is easy to see
-        # whether/where the barrier engages (e.g. pitch stuck high while cost is still ~0
-        # means `power` is too steep / `ramp_start` too high). One line per frame.
-        if self.posture_schedule_enabled and self.posture_schedule_debug and self.posture_task is not None:
-            q = self.configuration.q
-            parts = []
-            for dof_adr, qpos_adr, ramp_start, q_hi, cost_max, cost_min, power, jname in self._posture_sched:
-                span = q_hi - ramp_start
-                frac = 0.0 if span <= 0.0 else (q[qpos_adr] - ramp_start) / span
-                frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
-                parts.append(f"{jname}: q={q[qpos_adr]:+.3f}/{q_hi:.3f} "
-                             f"frac={frac:.2f} cost={self.posture_task.cost[dof_adr]:6.2f}")
-            print(f"[COLMO][PostureSched] {' | '.join(parts)}")
+            self._accel_dq_prev = dq_now
 
         qpos = self.configuration.data.qpos.copy()
         return qpos
-
-    def get_contact_point_positions(self) -> list:
-        """Return [(world_pos, is_active), ...] for each foot contact point.
-        is_active=True  → constraint was enforced in the last IK solve (foot in contact).
-        is_active=False → foot moving freely.
-        Returns empty list if foot contact is disabled.
-        """
-        if self.foot_contact_limit is None:
-            return []
-        data = self.configuration.data
-        result = []
-        for i, (body_id, local_pos) in enumerate(self.foot_contact_limit.contact_points):
-            body_xpos = data.xpos[body_id]
-            body_xmat = data.xmat[body_id].reshape(3, 3)
-            pos = body_xpos + body_xmat @ local_pos
-            result.append((pos, self.foot_contact_limit._active_mask[i]))
-        return result
 
     def error1(self):
         errs = []
