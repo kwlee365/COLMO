@@ -22,7 +22,7 @@ parameters:
   acceleration_limit : 300000
   # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
   # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
-  acceleration_softness : 1.0e-6
+  soft_rho : 1.0e-6
 
   cbf_gain : 0.0015 # alpha = 1.5
   issf_epsilon : 100.0

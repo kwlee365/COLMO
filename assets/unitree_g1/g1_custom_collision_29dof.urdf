@@ -668,7 +668,7 @@
     <parent link="torso_link"/>
     <child link="left_shoulder_pitch_link"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-3.0892" upper="1.649" effort="25" velocity="37"/>
+    <limit lower="-2.6" upper="0.95" effort="25" velocity="37"/>
   </joint>
   <link name="left_shoulder_roll_link">
     <inertial>
@@ -904,7 +904,7 @@
     <parent link="torso_link"/>
     <child link="right_shoulder_pitch_link"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-3.0892" upper="1.649" effort="25" velocity="37"/>
+    <limit lower="-2.6" upper="0.95" effort="25" velocity="37"/>
   </joint>
   <link name="right_shoulder_roll_link">
     <inertial>

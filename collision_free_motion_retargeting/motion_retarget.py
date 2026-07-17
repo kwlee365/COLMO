@@ -358,8 +358,8 @@ class CollisionFreeMotionRetargeting:
 
         # HARD inequality limits (collision CBF, foot contact, and the joint-configuration
         # position limit) are appended below. The position-limit object is created here and
-        # added to self.ik_limits once the YAML params are loaded; velocity may be hard or
-        # soft (see velocity_limit_soft).
+        # added to self.ik_limits once the YAML params are loaded. Velocity / acceleration /
+        # IK-step limits are all SOFT (self._soft_limits), never hard.
         self.ik_limits = []
         self.config_limit = mink.ConfigurationLimit(self.model)
 
@@ -376,7 +376,7 @@ class CollisionFreeMotionRetargeting:
         # Per-joint velocity limits [rad/s] for the FrameVelocityLimit (real per-frame limit
         # |qpos_t - qpos_{t-1}| <= v_max/fps). Enabled by the use_velocity_limit constructor
         # arg; joints NOT listed here are left unconstrained.
-        self.frame_velocity_limit_cfg = params.get('frame_velocity_limit', {}) or {}
+        self.frame_velocity_limit_cfg = params.get('frame_velocity_limit_soft', {}) or {}
         # IK solver / loop tuning, externalized to YAML (back-compat defaults kept).
         self.solver = params.get('solver', 'daqp')
         self._warmup_iters = params.get('warmup_iters', 500)
@@ -387,7 +387,7 @@ class CollisionFreeMotionRetargeting:
         # Per-joint acceleration limits [rad/s^2] for the FrameAccelerationLimit (real per-
         # frame limit |Δqpos_t - Δqpos_{t-1}| <= a_max*(1/fps)^2). Enabled by the
         # use_acceleration_limit constructor arg; joints NOT listed are left unconstrained.
-        self.frame_acceleration_limit_cfg = params.get('frame_acceleration_limit', {}) or {}
+        self.frame_acceleration_limit_cfg = params.get('frame_acceleration_limit_soft', {}) or {}
 
         # Collision-avoidance mode switch. Priority: explicit constructor arg >
         # YAML parameters.collision_mode > default "issf". See COLLISION_MODES.
@@ -428,12 +428,10 @@ class CollisionFreeMotionRetargeting:
         self.collision_detect_dist = params.get('detect_dist', None)
 
         # --- Soft-limit configuration -------------------------------------------------
-        # The VELOCITY and ACCELERATION limits can be applied as SOFT DAQP constraints
-        # (sense=8, shared rho_soft) instead of hard walls, so the QP never goes
-        # infeasible and they yield MINIMALLY only where they would fight a hard
-        # collision / foot-contact constraint. The POSITION (joint-config) limit is
-        # always HARD, so the robot never exceeds its joint ranges.
-        self.velocity_limit_soft = bool(params.get('velocity_limit_soft', False))
+        # The VELOCITY, ACCELERATION and IK-step limits are ALL applied as SOFT DAQP
+        # constraints (sense=8, shared rho_soft) -- never hard walls -- so the QP never goes
+        # infeasible and they yield MINIMALLY only where they would fight a hard collision /
+        # foot-contact constraint. The POSITION (joint-config) limit is always HARD.
         # Magnitude [rad/s] for the per-iteration IK step clamp (use_ik_step_limit): the
         # per-solve-step increment is bounded by |Δq_iter| <= ik_step_limit * opt.timestep.
         self.ik_step_limit = float(params.get('ik_step_limit', 20.0))
@@ -459,11 +457,10 @@ class CollisionFreeMotionRetargeting:
         actuated_names = {n for n, _, _ in actuated}
         frame_period = 1.0 / float(self.motion_fps)
 
-        # --- Velocity limit (real per-frame) ------------------------------------------
+        # --- Velocity limit (real per-frame, SOFT) ------------------------------------
         # FrameVelocityLimit caps |qpos_t - qpos_{t-1}| <= v_max/fps per joint. Enabled by
-        # the use_velocity_limit arg; per-joint v_max come from the frame_velocity_limit
-        # config map (joints NOT listed are left unconstrained). soft vs hard via
-        # velocity_limit_soft.
+        # the use_velocity_limit arg; per-joint v_max come from the frame_velocity_limit_soft
+        # config map (joints NOT listed are left unconstrained). Applied SOFT (DAQP sense=8).
         self.frame_velocity_limit = None
         self._vel_limits_map = {}
         if self.use_velocity_limit:
@@ -484,30 +481,25 @@ class CollisionFreeMotionRetargeting:
         # NOT a real velocity limit: clamps each IK solve iteration's increment,
         # |Δq_iter| <= ik_step_limit * opt.timestep, to regularize the differential-IK step
         # (prevent large single-iteration jumps). Enabled by use_ik_step_limit; magnitude
-        # ik_step_limit [rad/s]; soft (VelocityLimitAllDof, over actuated + base) vs hard
-        # (mink.VelocityLimit, actuated only) via velocity_limit_soft.
+        # ik_step_limit [rad/s]. Applied SOFT (VelocityLimitAllDof, over actuated + base).
         self.velocity_limit_obj = None
         if self.use_ik_step_limit:
-            if self.velocity_limit_soft:
-                v_max = np.full(self.model.nv, np.inf)
-                for _, dadr, w in actuated:
-                    v_max[dadr:dadr + w] = self.ik_step_limit
-                for d in base_dofs:
-                    v_max[d] = self.ik_step_limit
-                self.velocity_limit_obj = VelocityLimitAllDof(self.model, v_max)  # SOFT
-            else:
-                STEP_LIMITS = {n: self.ik_step_limit for n, _, _ in actuated}
-                self.ik_limits.append(mink.VelocityLimit(self.model, STEP_LIMITS))  # HARD
+            v_max = np.full(self.model.nv, np.inf)
+            for _, dadr, w in actuated:
+                v_max[dadr:dadr + w] = self.ik_step_limit
+            for d in base_dofs:
+                v_max[d] = self.ik_step_limit
+            self.velocity_limit_obj = VelocityLimitAllDof(self.model, v_max)  # SOFT
 
         # --- Acceleration limit (real per-frame, soft only) ---------------------------
         # FrameAccelerationLimit caps |Δqpos_t - Δqpos_{t-1}| <= a_max*(1/fps)^2 per joint,
         # applied SOFT (DAQP sense=8) so the QP never becomes infeasible. Enabled by the
-        # use_acceleration_limit arg; per-joint a_max come from the frame_acceleration_limit
-        # config map (joints NOT listed are unconstrained). Softness via acceleration_softness
-        # (rho_soft, shared by all soft rows; smaller -> nearer-hard).
+        # use_acceleration_limit arg; per-joint a_max come from the frame_acceleration_limit_soft
+        # config map (joints NOT listed are unconstrained). Softness via soft_rho (DAQP
+        # rho_soft, shared by all soft rows; smaller -> nearer-hard).
         self.accel_limit = None
         self._accel_limits_map = {}
-        self.accel_rho_soft = float(params.get('acceleration_softness', 1e-6))
+        self.soft_rho = float(params.get('soft_rho', 1e-6))
         if self.use_acceleration_limit:
             for n, a in self.frame_acceleration_limit_cfg.items():
                 if n in actuated_names:
@@ -525,34 +517,28 @@ class CollisionFreeMotionRetargeting:
         self._accel_dq_prev = np.zeros(self.model.nv)
 
         # --- Assemble hard vs soft sets -----------------------------------------------
-        # Position limit is ALWAYS hard (like collision / foot-contact). Velocity may be
-        # HARD (self.ik_limits) or SOFT (self._soft_limits, DAQP sense=8); acceleration is
-        # soft-only.
+        # Position limit is ALWAYS hard (like collision / foot-contact). Velocity,
+        # acceleration and the IK-step clamp are ALL soft (self._soft_limits, DAQP sense=8).
         self.ik_limits.append(self.config_limit)                     # position: HARD
         self._soft_limits = []
-        if self.frame_velocity_limit is not None:                    # real per-frame velocity
-            if self.velocity_limit_soft:
-                self._soft_limits.append(self.frame_velocity_limit)  # SOFT
-            else:
-                self.ik_limits.append(self.frame_velocity_limit)     # HARD
-        if self.velocity_limit_obj is not None:                      # IK step clamp (soft path)
+        if self.frame_velocity_limit is not None:                    # real per-frame velocity (SOFT)
+            self._soft_limits.append(self.frame_velocity_limit)
+        if self.velocity_limit_obj is not None:                      # IK step clamp (SOFT)
             self._soft_limits.append(self.velocity_limit_obj)
-        if self.accel_limit is not None:                             # soft-only
+        if self.accel_limit is not None:                             # real per-frame accel (SOFT)
             self._soft_limits.append(self.accel_limit)
 
         if verbose:
             print(f"[COLMO] Final Parameters ->  Damping: {self.damping}, Max Iterations: {self.max_iter}")
             if self.frame_velocity_limit is not None:               # FrameVelocityLimit active
                 lo, hi = float(self.frame_velocity_limit.limit.min()), float(self.frame_velocity_limit.limit.max())
-                vel_desc = (f"FrameVelocityLimit (real, |Δqpos|<=v/fps), v range {lo:g}-{hi:g} rad/s "
-                            f"@ fps={self.motion_fps} ({'SOFT' if self.velocity_limit_soft else 'HARD'}) "
-                            f"| {len(self._vel_limits_map)} joints")
+                vel_desc = (f"FrameVelocityLimit (real, |Δqpos|<=v/fps, SOFT), v range {lo:g}-{hi:g} "
+                            f"rad/s @ fps={self.motion_fps} | {len(self._vel_limits_map)} joints")
             else:                                                   # use_velocity_limit off / no joints
                 vel_desc = 'off'
             print(f"[COLMO] Position limit: hard | Velocity limit: {vel_desc} | "
-                  f"soft rho_soft={self.accel_rho_soft}")
-            step_desc = (f"{self.ik_step_limit} rad/s ({'SOFT' if self.velocity_limit_soft else 'hard'})"
-                         if self.use_ik_step_limit else 'off')
+                  f"soft rho_soft={self.soft_rho}")
+            step_desc = (f"{self.ik_step_limit} rad/s (SOFT)" if self.use_ik_step_limit else 'off')
             print(f"[COLMO] IK step limit (per-iteration Δq clamp): {step_desc}")
             if self.accel_limit is None:
                 accel_status = 'off'
@@ -810,7 +796,7 @@ class CollisionFreeMotionRetargeting:
 
         x, _obj, flag, _info = daqp.solve(
             np.ascontiguousarray(H), np.ascontiguousarray(c),
-            A, bupper, blower, sense, rho_soft=self.accel_rho_soft,
+            A, bupper, blower, sense, rho_soft=self.soft_rho,
         )
         if flag > 0:                       # 1 = optimal, 2 = soft-optimal (both solved)
             return x / dt

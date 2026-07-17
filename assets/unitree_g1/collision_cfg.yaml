@@ -20,7 +20,7 @@ parameters:
 
   ik_step_limit : 10
 
-  frame_acceleration_limit:
+  frame_acceleration_limit_soft:
     # left leg
     left_hip_pitch_joint: 8800
     left_hip_roll_joint: 8800
@@ -55,11 +55,11 @@ parameters:
     right_wrist_roll_joint: 2500
     right_wrist_pitch_joint: 500
     right_wrist_yaw_joint: 500
-  # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
-  acceleration_softness : 1.0e-6
+  # DAQP soft-constraint rho, SHARED by all soft rows (velocity / acceleration / IK-step):
+  # smaller -> nearer-hard / stronger; larger -> softer / yields more easily. Default 1e-6.
+  soft_rho : 1.0e-6
 
-  velocity_limit_soft : false
-  frame_velocity_limit:
+  frame_velocity_limit_soft:
     # left leg
     left_hip_pitch_joint: 32
     left_hip_roll_joint: 20
