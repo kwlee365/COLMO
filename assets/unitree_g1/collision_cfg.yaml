@@ -1,7 +1,7 @@
 # Robot body group definitions and self-collision limit parameters
 parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
-  damping: 0.05              # Levenberg-Marquardt regularization of the IK QP
+  damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
   solver : daqp             # QP backend passed to mink.solve_ik
