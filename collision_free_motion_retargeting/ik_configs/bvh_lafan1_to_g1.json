@@ -18,14 +18,14 @@
         "RightArm": 0.55,
         "LeftForeArm": 0.65,
         "RightForeArm": 0.65,
-        "LeftHand": 0.7,
-        "RightHand": 0.7
+        "LeftHand": 0.65,
+        "RightHand": 0.65
     },
     "ik_match_table1": {
         "pelvis": [
             "Hips",
             0,
-            10,
+            100,
             [
                 0.0,
                 0.0,
