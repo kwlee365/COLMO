@@ -12,8 +12,13 @@
         <joint axis="1 0 0" range="-1.8 1.8"/>
       </default>
       <default class="hip">
+        <!-- front_hip = the "shoulder pitch" of the front legs (mapped from the human
+             arms). Tightened to a human-like window so the arm does not swing/hyper-
+             extend backward: -thigh swings the paw forward (+x), +thigh swings it back,
+             so the backward side (+) is capped at ~2.2 and forward (-) at ~-1.2. Rest 0
+             stays in range (required by mink). back_hip (rear/leg) stays wide for walking. -->
         <default class="front_hip">
-          <joint range="-3.6 3.6"/>
+          <joint range="-1.2 2.2"/>
         </default>
         <default class="back_hip">
           <joint range="-3.6 3.6"/>
@@ -98,7 +103,10 @@
             <inertial pos="0.00629595 -0.000622121 -0.141417"
               quat="0.710672 0.00154099 -0.00450087 0.703508"
               mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05" />
-            <joint name="FL_calf_joint" class="knee" />
+            <!-- front "elbow": per-joint range (overrides the wide knee class) so it
+                 flexes toward the body (+) and only mildly extends (-), instead of the
+                 dog-knee deep backward extension the retarget was driving it to. -->
+            <joint name="FL_calf_joint" class="knee" range="-1.8 0.4" />
             <geom mesh="calf_0" material="gray" class="visual" />
             <geom mesh="calf_1" material="black" class="visual" />
             <geom name="FL_calf_col" size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0" type="capsule" class="collision" />
@@ -131,7 +139,7 @@
             <inertial pos="0.00629595 0.000622121 -0.141417"
               quat="0.703508 -0.00450087 0.00154099 0.710672"
               mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05" />
-            <joint name="FR_calf_joint" class="knee" />
+            <joint name="FR_calf_joint" class="knee" range="-1.8 0.4" />
             <geom mesh="calf_mirror_0" material="gray" class="visual" />
             <geom mesh="calf_mirror_1" material="black" class="visual" />
             <geom name="FR_calf_col" size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0"

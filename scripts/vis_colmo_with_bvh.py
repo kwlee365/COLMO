@@ -86,7 +86,7 @@ if __name__ == "__main__":
     parser.add_argument("--bvh_file", required=True, type=str, help="BVH motion file.")
     parser.add_argument("--format", choices=["lafan1", "nokov"], default="lafan1")
     parser.add_argument("--robot", default="unitree_g1",
-                        choices=["unitree_g1", "unitree_h1", "kapex", "unitree_go2"])
+                        choices=["unitree_g1", "unitree_h1", "kapex", "unitree_go2", "booster_t1"])
     parser.add_argument("--motion_fps", type=int, default=30)
     parser.add_argument("--loop", action="store_true", default=False)
     parser.add_argument("--rate_limit", action="store_true", default=True,

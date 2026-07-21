@@ -5,7 +5,6 @@ parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
   damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
-  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
   solver : daqp             # QP backend passed to mink.solve_ik
   warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
@@ -15,16 +14,74 @@ parameters:
   ground_offset : 0.0    # per-frame robot ground offset [m] (apply_ground_offset)
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
-  # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
-  # Applied as a SOFT QP constraint (DAQP sense=8): honoured when feasible, yields
-  # minimally to the hard collision CBF / joint limits so the QP never goes infeasible.
-  # Comment out / set <=0 to disable.
-  acceleration_limit : 300000
-  # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
-  # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
+
+  # Enable flags for the three IK limits (a constructor arg, if passed, overrides these).
+  use_velocity_limit : true       # FrameVelocityLimit (real per-frame velocity, frame_velocity_limit)
+  use_acceleration_limit : true   # FrameAccelerationLimit (real per-frame accel, frame_acceleration_limit)
+  use_ik_step_limit : true        # per-iteration IK step clamp (|Δq| <= ik_step_limit * opt.timestep)
+
+  ik_step_limit : 10
+
+  # Per-joint acceleration cap [rad/s^2] = motor ctrlrange_max / joint armature
+  # (from h1.xml). NOTE: h1.xml uses a uniform armature=0.1 for all joints, so
+  # these are ctrlrange_max / 0.1 (a crude reflected-inertia proxy, not per-drive).
+  frame_acceleration_limit_soft:
+    # left leg
+    left_hip_yaw_joint: 2000      # 200 / 0.1
+    left_hip_roll_joint: 2000     # 200 / 0.1
+    left_hip_pitch_joint: 2000    # 200 / 0.1
+    left_knee_joint: 3000         # 300 / 0.1
+    left_ankle_joint: 400         # 40 / 0.1
+    # right leg
+    right_hip_yaw_joint: 2000
+    right_hip_roll_joint: 2000
+    right_hip_pitch_joint: 2000
+    right_knee_joint: 3000
+    right_ankle_joint: 400
+    # torso
+    torso_joint: 2000             # 200 / 0.1
+    # left arm
+    left_shoulder_pitch_joint: 400  # 40 / 0.1
+    left_shoulder_roll_joint: 400   # 40 / 0.1
+    left_shoulder_yaw_joint: 180    # 18 / 0.1
+    left_elbow_joint: 180           # 18 / 0.1
+    # right arm
+    right_shoulder_pitch_joint: 400
+    right_shoulder_roll_joint: 400
+    right_shoulder_yaw_joint: 180
+    right_elbow_joint: 180
+  # DAQP soft-constraint rho, SHARED by all soft rows (velocity / acceleration / IK-step):
+  # smaller -> nearer-hard / stronger; larger -> softer / yields more easily. Default 1e-6.
   soft_rho : 1.0e-6
 
-  cbf_gain : 0.0015 # alpha = 1.5
+  # Per-joint velocity cap [rad/s] = URDF <limit velocity=...> (h1.urdf).
+  frame_velocity_limit_soft:
+    # left leg
+    left_hip_yaw_joint: 23
+    left_hip_roll_joint: 23
+    left_hip_pitch_joint: 23
+    left_knee_joint: 14
+    left_ankle_joint: 9
+    # right leg
+    right_hip_yaw_joint: 23
+    right_hip_roll_joint: 23
+    right_hip_pitch_joint: 23
+    right_knee_joint: 14
+    right_ankle_joint: 9
+    # torso
+    torso_joint: 23
+    # left arm
+    left_shoulder_pitch_joint: 9
+    left_shoulder_roll_joint: 9
+    left_shoulder_yaw_joint: 20
+    left_elbow_joint: 20
+    # right arm
+    right_shoulder_pitch_joint: 9
+    right_shoulder_roll_joint: 9
+    right_shoulder_yaw_joint: 20
+    right_elbow_joint: 20
+
+  cbf_gain : 1.5 # alpha = 1.5
   issf_epsilon : 100.0
 
 # ── Collision geom groups ─────────────────────────────────────────────────────

@@ -3,35 +3,114 @@ parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
   damping: 0.05              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
-  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
   solver : daqp             # QP backend passed to mink.solve_ik
   warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
   ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
-  ground_offset : -0.01    # per-frame robot ground offset [m] (apply_ground_offset)
+  ground_offset : -0.02    # per-frame robot ground offset [m] (apply_ground_offset)
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
-  # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
-  # Applied as a SOFT QP constraint (DAQP sense=8): honoured when feasible, yields
-  # minimally to the hard collision CBF / joint limits so the QP never goes infeasible.
-  # Comment out / set <=0 to disable.
-  acceleration_limit : 300000
-  # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
-  # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
+
+  # Enable flags for the three IK limits (a constructor arg, if passed, overrides these).
+  use_velocity_limit : true       # FrameVelocityLimit (real per-frame velocity, frame_velocity_limit)
+  use_acceleration_limit : true   # FrameAccelerationLimit (real per-frame accel, frame_acceleration_limit)
+  use_ik_step_limit : true        # per-iteration IK step clamp (|Δq| <= ik_step_limit * opt.timestep)
+
+  ik_step_limit : 10
+
+  # Per-joint acceleration cap [rad/s^2] = motor ctrlrange_max / joint armature
+  # (from KAPEX0_mockup_wo_hand.xml actuator classes). Physical torque/inertia
+  # ceiling of each drive.
+  frame_acceleration_limit_soft:
+    # left leg
+    left_hip_yaw_joint: 643        # RO80: 100 / 0.1556
+    left_hip_roll_joint: 643       # RO80: 100 / 0.1556
+    left_hip_pitch_joint: 665      # RO100: 300 / 0.4512
+    left_knee_joint: 665           # RO100: 300 / 0.4512
+    left_ankle_pitch_joint: 348    # 100 / 0.287359
+    left_ankle_roll_joint: 854     # 100 / 0.117123
+    left_toe_pitch_joint: 3448     # RI60: 30 / 0.0087
+    # right leg
+    right_hip_yaw_joint: 643
+    right_hip_roll_joint: 643
+    right_hip_pitch_joint: 665
+    right_knee_joint: 665
+    right_ankle_pitch_joint: 348
+    right_ankle_roll_joint: 854
+    right_toe_pitch_joint: 3448
+    # waist
+    waist_roll_joint: 519          # AK8064: 120 / 0.2312
+    waist_yaw_joint: 519           # AK8064_diff: 240 / 0.4624
+    waist_pitch_joint: 519         # AK8064_diff: 240 / 0.4624
+    # head
+    head_pitch_joint: 2005         # AK7010: 8.3 / 0.00414
+    head_yaw_joint: 3422           # AK606: 3 / 0.0008766
+    # left arm
+    left_shoulder_pitch_joint: 643  # RO80: 100 / 0.1556
+    left_shoulder_roll_joint: 643   # RO80: 100 / 0.1556
+    left_shoulder_yaw_joint: 6530   # AK1093: 53 / 0.0081162
+    left_elbow_joint: 6530          # AK1093: 53 / 0.0081162
+    left_wrist_yaw_joint: 10417     # AK709: 30 / 0.00288
+    left_wrist_roll_joint: 108292   # linear: 7 / 0.00006464
+    left_wrist_pitch_joint: 108292  # linear: 7 / 0.00006464
+    # right arm
+    right_shoulder_pitch_joint: 643
+    right_shoulder_roll_joint: 643
+    right_shoulder_yaw_joint: 6530
+    right_elbow_joint: 6530
+    right_wrist_yaw_joint: 10417
+    right_wrist_roll_joint: 108292
+    right_wrist_pitch_joint: 108292
+  # DAQP soft-constraint rho, SHARED by all soft rows (velocity / acceleration / IK-step):
+  # smaller -> nearer-hard / stronger; larger -> softer / yields more easily. Default 1e-6.
   soft_rho : 1.0e-6
-  # Enable (true) / disable (false) the SOFT acceleration constraint (soft-only).
-  acceleration_limit_soft : true
 
-  # Apply the joint VELOCITY limit as SOFT DAQP rows (like accel), so the QP never
-  # goes infeasible and it yields minimally only where it would fight the hard
-  # collision CBF. The POSITION (joint-config) limit is always HARD -- the robot never
-  # exceeds its joint ranges. When soft, the same velocity_limit is also applied to the
-  # free/floating-base 6 DoFs (translation m/s, rotation rad/s).
-  velocity_limit_soft : true
+  # Per-joint velocity cap [rad/s] = URDF <limit velocity=...> of each joint
+  # (KAPEX0_mockup_wo_hand.urdf).
+  frame_velocity_limit_soft:
+    # left leg
+    left_hip_yaw_joint: 8.18
+    left_hip_roll_joint: 8.18
+    left_hip_pitch_joint: 4.55
+    left_knee_joint: 4.55
+    left_ankle_pitch_joint: 8.18
+    left_ankle_roll_joint: 8.18
+    left_toe_pitch_joint: 7.04
+    # right leg
+    right_hip_yaw_joint: 8.18
+    right_hip_roll_joint: 8.18
+    right_hip_pitch_joint: 4.55
+    right_knee_joint: 4.55
+    right_ankle_pitch_joint: 8.18
+    right_ankle_roll_joint: 8.18
+    right_toe_pitch_joint: 7.04
+    # waist
+    waist_roll_joint: 2.51
+    waist_yaw_joint: 2.51
+    waist_pitch_joint: 2.51
+    # head
+    head_pitch_joint: 32.5
+    head_yaw_joint: 44.0
+    # left arm
+    left_shoulder_pitch_joint: 23.0
+    left_shoulder_roll_joint: 23.0
+    left_shoulder_yaw_joint: 24.6
+    left_elbow_joint: 24.6
+    left_wrist_yaw_joint: 15.71
+    left_wrist_roll_joint: 288.9
+    left_wrist_pitch_joint: 288.9
+    # right arm
+    right_shoulder_pitch_joint: 23.0
+    right_shoulder_roll_joint: 23.0
+    right_shoulder_yaw_joint: 24.6
+    right_elbow_joint: 24.6
+    right_wrist_yaw_joint: 15.71
+    right_wrist_roll_joint: 288.9
+    right_wrist_pitch_joint: 288.9
 
-  cbf_gain : 0.0015 # alpha = 1.5
+  cbf_gain : 1.5 # alpha = 1.5
   issf_epsilon : 600.0
 
 groups:

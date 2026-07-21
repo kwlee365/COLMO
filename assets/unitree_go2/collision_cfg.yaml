@@ -3,7 +3,6 @@ parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
   damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
-  velocity_limit : 10       # joint velocity cap [rad/s] (only if use_velocity_limit)
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
   solver : daqp             # QP backend passed to mink.solve_ik
   warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
@@ -13,16 +12,59 @@ parameters:
   ground_offset : 0.0       # per-frame robot ground offset [m] (apply_ground_offset)
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
-  # Per-frame joint-acceleration cap |q_dot - q_dot_prev| <= a_max*dt (rad/s^2).
-  # Applied as a SOFT QP constraint (DAQP sense=8): honoured when feasible, yields
-  # minimally to the hard collision CBF / joint limits so the QP never goes infeasible.
-  # Comment out / set <=0 to disable.
-  acceleration_limit : 300000
-  # Softness of the accel constraint (DAQP rho_soft): smaller -> nearer-hard / stronger
-  # smoothing; larger -> softer / yields more easily. Default 1e-6 (near-hard).
+
+  # Enable flags for the three IK limits (a constructor arg, if passed, overrides these).
+  use_velocity_limit : true       # FrameVelocityLimit (real per-frame velocity, frame_velocity_limit)
+  use_acceleration_limit : true   # FrameAccelerationLimit (real per-frame accel, frame_acceleration_limit)
+  use_ik_step_limit : true        # per-iteration IK step clamp (|Δq| <= ik_step_limit * opt.timestep)
+
+  ik_step_limit : 10
+
+  # Quadruped: 12 leg joints (FL/FR/RL/RR x hip/thigh/calf).
+  # Acceleration cap [rad/s^2] = motor ctrlrange_max / joint armature (go2.xml).
+  # go2.xml uses a uniform armature=0.01; hip/thigh motors +-23.7, calf +-45.43.
+  frame_acceleration_limit_soft:
+    # front-left leg
+    FL_hip_joint: 2370      # 23.7 / 0.01
+    FL_thigh_joint: 2370    # 23.7 / 0.01
+    FL_calf_joint: 4543     # 45.43 / 0.01
+    # front-right leg
+    FR_hip_joint: 2370
+    FR_thigh_joint: 2370
+    FR_calf_joint: 4543
+    # rear-left leg
+    RL_hip_joint: 2370
+    RL_thigh_joint: 2370
+    RL_calf_joint: 4543
+    # rear-right leg
+    RR_hip_joint: 2370
+    RR_thigh_joint: 2370
+    RR_calf_joint: 4543
+  # DAQP soft-constraint rho, SHARED by all soft rows (velocity / acceleration / IK-step):
+  # smaller -> nearer-hard / stronger; larger -> softer / yields more easily. Default 1e-6.
   soft_rho : 1.0e-6
 
-  cbf_gain : 0.0015 # alpha = 1.5
+  # Velocity cap [rad/s] = URDF <limit velocity=...> (go2.urdf):
+  # hip/thigh 30.1, calf 15.70.
+  frame_velocity_limit_soft:
+    # front-left leg
+    FL_hip_joint: 30.1
+    FL_thigh_joint: 30.1
+    FL_calf_joint: 15.70
+    # front-right leg
+    FR_hip_joint: 30.1
+    FR_thigh_joint: 30.1
+    FR_calf_joint: 15.70
+    # rear-left leg
+    RL_hip_joint: 30.1
+    RL_thigh_joint: 30.1
+    RL_calf_joint: 15.70
+    # rear-right leg
+    RR_hip_joint: 30.1
+    RR_thigh_joint: 30.1
+    RR_calf_joint: 15.70
+
+  cbf_gain : 1.5 # alpha = 1.5
   issf_epsilon : 20.0
 
 groups:

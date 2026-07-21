@@ -1,5 +1,5 @@
 {
-    "_comment": "LAFAN1 -> Unitree Go2 UPRIGHT biped. arms->front legs, legs->rear legs, spine->body VERTICAL (base rot_offset [-0.707107,-0.707107,0,0]). scales root 0.64/arms 0.55/legs 0.60. BOTH front legs (arms) AND rear legs (legs) now track thigh+calf by ORIENTATION (posW=0); only the paws (FL/FR/RL/RR_foot) keep POSITION. Front-leg rot_offsets calibrated (frame0 of walk1_subject2) by R_human^-1*R_robot from the position-only solve; rear-leg offsets from the original symmetric reference. This stops the front legs from collapsing into each other/the trunk (the main Go2 self-collision source). go2 knee range widened to [-2.9,2.9]. root raised 0.60->0.64 for the 0.022 foot-sphere radius.",
+    "_comment": "LAFAN1 -> Unitree Go2 UPRIGHT biped. arms->front legs, legs->rear legs, spine->body VERTICAL (base rot_offset [-0.707107,-0.707107,0,0]). scales root 0.50/arms(front) 0.65/legs(rear) 0.50 -- CALIBRATED by SEGMENT LENGTH (not reach). Go2 thigh==calf==0.213 m (both front & rear legs). Measured LAFAN1 (walk1_subject2): human thigh 0.435, shin 0.424, upper-arm 0.330, fore-arm 0.252 m. To make the scaled human LIMB SEGMENT equal the fixed 0.213 m robot segment: legs 0.213/0.43~=0.50 (thigh 0.435*0.50=0.218~=0.213 ok), arms 0.213/0.33~=0.65 (matches the proximal upper-arm; the fore-arm ends up a bit short since the human arm is unequal 0.33/0.25 while the robot front leg is equal 0.213/0.213). This also keeps the paws reachable: Hips->Foot 0.809*0.50=0.40 m < the ~0.49 m max base->paw reach. The earlier 0.55/0.60 (and a wrong 0.70/0.79 pass) OVER-scaled the thigh, so the drawn/scaled human limbs no longer matched the robot links and the paw target exceeded reach. root lowered 0.64->0.50 to keep it consistent with the leg scale so the rear paws sit on the ground; co-tune +-0.05 if the vertical biped stance is too high/low. BOTH front legs (arms) AND rear legs (legs) now track thigh+calf by ORIENTATION (posW=0); only the paws (FL/FR/RL/RR_foot) keep POSITION. Front-leg rot_offsets calibrated (frame0 of walk1_subject2) by R_human^-1*R_robot from the position-only solve; rear-leg offsets from the original symmetric reference. This stops the front legs from collapsing into each other/the trunk (the main Go2 self-collision source). go2 knee range widened to [-2.9,2.9]. root raised 0.60->0.64 for the 0.022 foot-sphere radius.",
     "robot_root_name": "base_link",
     "human_root_name": "Hips",
     "ground_height": 0.0,
@@ -7,25 +7,25 @@
     "use_ik_match_table1": true,
     "use_ik_match_table2": true,
     "human_scale_table": {
-        "Hips": 0.64,
-        "LeftArm": 0.55,
-        "LeftForeArm": 0.55,
-        "LeftHand": 0.55,
-        "RightArm": 0.55,
-        "RightForeArm": 0.55,
-        "RightHand": 0.55,
-        "LeftUpLeg": 0.6,
-        "LeftLeg": 0.6,
-        "LeftFootMod": 0.6,
-        "RightUpLeg": 0.6,
-        "RightLeg": 0.6,
-        "RightFootMod": 0.6
+        "Hips": 0.50,
+        "LeftArm": 0.65,
+        "LeftForeArm": 0.65,
+        "LeftHand": 0.65,
+        "RightArm": 0.65,
+        "RightForeArm": 0.65,
+        "RightHand": 0.65,
+        "LeftUpLeg": 0.50,
+        "LeftLeg": 0.50,
+        "LeftFootMod": 0.50,
+        "RightUpLeg": 0.50,
+        "RightLeg": 0.50,
+        "RightFootMod": 0.50
     },
     "ik_match_table1": {
         "base_link": [
             "Hips",
             100,
-            50,
+            300,
             [
                 0.0,
                 0.0,
@@ -235,7 +235,7 @@
         "base_link": [
             "Hips",
             100,
-            20,
+            250,
             [
                 0.0,
                 0.0,

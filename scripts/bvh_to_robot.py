@@ -36,7 +36,7 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--robot",
-        choices=["unitree_g1", "unitree_h1", "kapex", "unitree_go2"],
+        choices=["unitree_g1", "unitree_h1", "kapex", "unitree_go2", "booster_t1"],
         default="unitree_g1",
     )
     

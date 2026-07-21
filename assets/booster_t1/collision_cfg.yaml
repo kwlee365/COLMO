@@ -1,0 +1,160 @@
+# Robot body group definitions and self-collision limit parameters (Booster T1,
+# serial-chain variant). Group entries reference the NAMED capsule collision geoms
+# defined in T1_serial.xml (class="collision").
+parameters:
+  # REQUIRED (no code default): construction raises if any of these is missing.
+  damping: 0.5              # Levenberg-Marquardt regularization of the IK QP
+  max_iter: 10              # IK iterations per frame
+  # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
+  solver : daqp             # QP backend passed to mink.solve_ik
+  warmup_iters : 500        # IK iterations on the very first frame (settle from rest)
+  ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
+  lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
+  motion_fps : 30           # frame rate assumed for the foot-contact threshold
+  ground_offset : 0.0       # per-frame robot ground offset [m] (apply_ground_offset)
+  # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
+  collision_mode : issf
+
+  # Enable flags for the three IK limits (a constructor arg, if passed, overrides these).
+  use_velocity_limit : true       # FrameVelocityLimit (real per-frame velocity)
+  use_acceleration_limit : true   # FrameAccelerationLimit (real per-frame accel)
+  use_ik_step_limit : true        # per-iteration IK step clamp
+
+  ik_step_limit : 10
+
+  # Per-joint acceleration cap [rad/s^2] = motor effort / joint armature.
+  # T1_serial.xml uses a uniform armature=0.01, so accel = URDF effort / 0.01
+  # (a crude reflected-inertia proxy, not a per-drive spec).
+  frame_acceleration_limit_soft:
+    # head
+    AAHead_yaw: 700           # 7 / 0.01
+    Head_pitch: 700           # 7 / 0.01
+    # left arm
+    Left_Shoulder_Pitch: 1800 # 18 / 0.01
+    Left_Shoulder_Roll: 1800
+    Left_Elbow_Pitch: 1800
+    Left_Elbow_Yaw: 1800
+    # right arm
+    Right_Shoulder_Pitch: 1800
+    Right_Shoulder_Roll: 1800
+    Right_Elbow_Pitch: 1800
+    Right_Elbow_Yaw: 1800
+    # waist
+    Waist: 3000               # 30 / 0.01
+    # left leg
+    Left_Hip_Pitch: 4500      # 45 / 0.01
+    Left_Hip_Roll: 3000       # 30 / 0.01
+    Left_Hip_Yaw: 3000
+    Left_Knee_Pitch: 6000     # 60 / 0.01
+    Left_Ankle_Pitch: 2000    # 20 / 0.01
+    Left_Ankle_Roll: 1500     # 15 / 0.01
+    # right leg
+    Right_Hip_Pitch: 4500
+    Right_Hip_Roll: 3000
+    Right_Hip_Yaw: 3000
+    Right_Knee_Pitch: 6000
+    Right_Ankle_Pitch: 2000
+    Right_Ankle_Roll: 1500
+  # DAQP soft-constraint rho, SHARED by all soft rows (velocity / acceleration / IK-step):
+  # smaller -> nearer-hard / stronger; larger -> softer / yields more easily.
+  soft_rho : 1.0e-6
+
+  # Per-joint velocity cap [rad/s] = URDF <limit velocity=...> (T1_serial.urdf).
+  frame_velocity_limit_soft:
+    # head
+    AAHead_yaw: 12.56
+    Head_pitch: 12.56
+    # left arm
+    Left_Shoulder_Pitch: 18.84
+    Left_Shoulder_Roll: 18.84
+    Left_Elbow_Pitch: 18.84
+    Left_Elbow_Yaw: 18.84
+    # right arm
+    Right_Shoulder_Pitch: 18.84
+    Right_Shoulder_Roll: 18.84
+    Right_Elbow_Pitch: 18.84
+    Right_Elbow_Yaw: 18.84
+    # waist
+    Waist: 10.88
+    # left leg
+    Left_Hip_Pitch: 12.5
+    Left_Hip_Roll: 10.9
+    Left_Hip_Yaw: 10.9
+    Left_Knee_Pitch: 11.7
+    Left_Ankle_Pitch: 18.8
+    Left_Ankle_Roll: 12.4
+    # right leg
+    Right_Hip_Pitch: 12.5
+    Right_Hip_Roll: 10.9
+    Right_Hip_Yaw: 10.9
+    Right_Knee_Pitch: 11.7
+    Right_Ankle_Pitch: 18.8
+    Right_Ankle_Roll: 12.4
+
+  cbf_gain : 1.5 # alpha = 1.5
+  issf_epsilon : 100.0
+
+# ── Collision geom groups ─────────────────────────────────────────────────────
+# Names below must match the `name=` of the capsule collision geoms in
+# T1_serial.xml. T1 has a small head geom folded into the torso group.
+groups:
+  torso: ["torso_left", "torso_right", "head", "pelvis"]
+  torso_upper: ["torso_left", "torso_right", "head"]
+
+  l_arm: ["left_forearm", "left_hand"]
+  r_arm: ["right_forearm", "right_hand"]
+  l_arm_lower: ["left_forearm", "left_hand"]
+  r_arm_lower: ["right_forearm", "right_hand"]
+
+  l_leg: ["left_thigh", "left_calf", "left_foot_1", "left_foot_2"]
+  r_leg: ["right_thigh", "right_calf", "right_foot_1", "right_foot_2"]
+  l_leg_lower: ["left_calf", "left_foot_1", "left_foot_2"]
+  r_leg_lower: ["right_calf", "right_foot_1", "right_foot_2"]
+
+  ground: ["floor"]
+
+
+collision_limits:
+  - name: "body_general"
+    pairs:
+      - ["l_leg", "r_leg"]
+      - ["l_arm", "l_leg"]
+      - ["l_arm", "r_leg"]
+      - ["r_arm", "l_leg"]
+      - ["r_arm", "r_leg"]
+      - ["r_arm", "l_arm"]
+      - ["l_arm_lower", "torso"]
+      - ["r_arm_lower", "torso"]
+    margin: 0.0
+    detect_dist: 0.05
+
+  - name: "ground_collision"
+    pairs:
+      - ["l_arm", "ground"]
+      - ["r_arm", "ground"]
+      - ["r_leg", "ground"]
+      - ["l_leg", "ground"]
+      - ["torso", "ground"]
+    margin: 0.0
+    detect_dist: 0.05
+
+
+# ── Foot geoms / foot-contact (optional; disabled, mirrors G1/H1 defaults) ─────
+foot_geoms:
+  left:
+    - left_foot_1
+    - left_foot_2
+  right:
+    - right_foot_1
+    - right_foot_2
+
+foot_contact:
+  enabled: false
+  threshold: 0.3        # m/s — contact activates when human foot speed <= this
+  velocity_bound: 0.001 # m/s — hard XY velocity limit once in contact
+
+  contact_points:
+    - body_name: "left_foot_link"
+      local_pos: [0.0, 0.0, 0.0]
+    - body_name: "right_foot_link"
+      local_pos: [0.0, 0.0, 0.0]

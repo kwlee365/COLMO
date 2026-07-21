@@ -1,5 +1,5 @@
 {
-    "_comment": "SMPL-X -> Unitree Go2 (quadruped) as an UPRIGHT biped: human arms -> front legs, human legs -> rear legs, spine -> go2 body held VERTICAL so it walks on its hind legs. base rot_offset [0,0.707107,0.707107,0] tilts the go2 nose up. Same design as bvh_lafan1_to_go2.json; the orientation was derived by composing the horizontal base offset with a 270deg body-pitch. If the nose comes out tilted for SMPL-X data, retune this quaternion. go2_mocap.xml has widened joint limits so the hind knees can straighten into this pose.",
+    "_comment": "SMPL-X -> Unitree Go2 (quadruped) as an UPRIGHT biped: human arms -> front legs, human legs -> rear legs, spine -> go2 body held VERTICAL so it walks on its hind legs. base rot_offset [0,0.707107,0.707107,0] tilts the go2 nose up. Same design as bvh_lafan1_to_go2.json; the orientation was derived by composing the horizontal base offset with a 270deg body-pitch. If the nose comes out tilted for SMPL-X data, retune this quaternion. go2_mocap.xml has widened joint limits so the hind knees can straighten into this pose. SCALES CALIBRATED BY SEGMENT LENGTH to root 0.50/arms(front) 0.65/legs(rear) 0.50 (was 0.55/0.55/0.60): here EVERY joint is position-tracked, so the scale must make each scaled human SEGMENT equal the fixed robot segment (Go2 thigh==calf==0.213 m). Human segments ~ thigh 0.44/shin 0.42/upper-arm 0.33/fore-arm 0.25 m => legs 0.213/0.43~=0.50, arms 0.213/0.33~=0.65 (matches the proximal upper-arm; fore-arm ends slightly short because the human arm is unequal while the robot front leg is equal). A prior 0.70/0.79 pass over-scaled the thigh and pushed targets past reach. root 0.50 keeps the stance consistent so the rear feet reach the ground; fine-tune per-segment if elbow/knee tracking drifts.",
     "robot_root_name": "base_link",
     "human_root_name": "pelvis",
     "ground_height": 0.0,
@@ -7,25 +7,25 @@
     "use_ik_match_table1": true,
     "use_ik_match_table2": true,
     "human_scale_table": {
-        "pelvis": 0.55,
-        "left_shoulder": 0.55,
-        "left_elbow": 0.55,
-        "left_wrist": 0.55,
-        "right_shoulder": 0.55,
-        "right_elbow": 0.55,
-        "right_wrist": 0.55,
-        "left_hip": 0.60,
-        "left_knee": 0.60,
-        "left_foot": 0.60,
-        "right_hip": 0.60,
-        "right_knee": 0.60,
-        "right_foot": 0.60
+        "pelvis": 0.50,
+        "left_shoulder": 0.65,
+        "left_elbow": 0.65,
+        "left_wrist": 0.65,
+        "right_shoulder": 0.65,
+        "right_elbow": 0.65,
+        "right_wrist": 0.65,
+        "left_hip": 0.50,
+        "left_knee": 0.50,
+        "left_foot": 0.50,
+        "right_hip": 0.50,
+        "right_knee": 0.50,
+        "right_foot": 0.50
     },
     "ik_match_table1": {
         "base_link": [
             "pelvis",
             100,
-            50,
+            300,
             [0.0, 0.0, 0.0],
             [0.0, 0.707107, 0.707107, 0.0]
         ],
@@ -118,7 +118,7 @@
         "base_link": [
             "pelvis",
             100,
-            20,
+            250,
             [0.0, 0.0, 0.0],
             [0.0, 0.707107, 0.707107, 0.0]
         ],
