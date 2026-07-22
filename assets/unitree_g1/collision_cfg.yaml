@@ -10,6 +10,11 @@ parameters:
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
   ground_offset : 0.0    # per-frame robot ground offset [m] (apply_ground_offset)
+  # Warmup iteration at which the first-frame ground calibration measures the robot foot
+  # float (via FK) and folds it into ground_offset; remaining warmup iters re-settle the
+  # foot onto the ground. Clamped to warmup_iters//2. Active only if the IK config sets
+  # ground_anchor_bodies. The warmup foot pose converges within a few dozen iters.
+  ground_calib_warmup_iter : 200
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
 
@@ -95,8 +100,6 @@ parameters:
     right_wrist_pitch_joint: 22
     right_wrist_yaw_joint: 22
 
-  cbf_gain : 1.5 # alpha = 1.5
-  issf_epsilon : 100.0
 
 groups:
   torso: ["Pelvis", "Chest", "Head"]
@@ -110,15 +113,15 @@ groups:
 
   l_leg_upper: ["Left_Upper_Leg1"]
   r_leg_upper: ["Right_Upper_Leg1"]
-  l_leg_lower: ["Left_Upper_Leg2","Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot"]
-  r_leg_lower: ["Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot"]
+  l_leg_lower: ["Left_Upper_Leg2","Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot1", "Left_Foot2"]
+  r_leg_lower: ["Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot1", "Right_Foot2"]
 
   l_arm: ["Left_Upper_Arm", "Left_Forearm", "Left_Elbow","Left_Hand1"]
   r_arm: ["Right_Upper_Arm", "Right_Forearm", "Right_Elbow", "Right_Hand1"]
   l_arm_lower: ["Left_Forearm", "Left_Elbow","Left_Hand1"]
   r_arm_lower: ["Right_Forearm", "Right_Elbow", "Right_Hand1"]
-  l_leg: ["Left_Upper_Leg1", "Left_Upper_Leg2", "Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot"]
-  r_leg: ["Right_Upper_Leg1", "Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot"]
+  l_leg: ["Left_Upper_Leg1", "Left_Upper_Leg2", "Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot1", "Left_Foot2"]
+  r_leg: ["Right_Upper_Leg1", "Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot1", "Right_Foot2"]
   ground: ["floor"]
 
 
@@ -133,6 +136,10 @@ collision_limits:
       - ["r_arm", "l_arm"]
       - ["l_arm_lower", "torso"]
       - ["r_arm_lower", "torso"]
+      - ["l_leg", "torso_upper"]
+      - ["r_leg", "torso_upper"]
+    cbf_gain: 1.0              
+    issf_epsilon: 500.0        
     margin: 0.0
     detect_dist: 0.05
 
@@ -146,3 +153,5 @@ collision_limits:
       - ["torso", "ground"]
     margin: 0.0
     detect_dist: 0.05
+    cbf_gain: 1.0
+    issf_epsilon: 1000.0

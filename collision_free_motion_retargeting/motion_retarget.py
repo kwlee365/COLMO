@@ -342,6 +342,16 @@ class CollisionFreeMotionRetargeting:
         self.human_scale_table = ik_config["human_scale_table"]
         self.ground = ik_config["ground_height"] * np.array([0, 0, 1])
 
+        # Robot foot IK-target bodies that should rest on the ground (e.g.
+        # ["left_ankle_roll_link", "right_ankle_roll_link"]). Used only to know which link
+        # meshes to measure for the warmup ground calibration (see retarget()); empty ->
+        # calibration is skipped.
+        self.ground_anchor_bodies = ik_config.get("ground_anchor_bodies", [])
+        # Lazily-built cache of (geom_id, local_vertices) for those bodies' meshes, and the
+        # floor plane height, used by measure_foot_float.
+        self._foot_mesh_cache = None
+        self._floor_z = None
+
         self.verbose = verbose
 
         self.human_body_to_task1 = {}
@@ -384,6 +394,12 @@ class CollisionFreeMotionRetargeting:
         self.lm_damping = params.get('lm_damping', 1.0)        # per-FrameTask LM damping
         self.motion_fps = params.get('motion_fps', 30)         # foot-contact fps assumption
         self.ground_offset = params.get('ground_offset', -0.01)  # per-frame robot ground offset [m]
+        # Warmup iteration at which the first-frame ground calibration measures the robot's
+        # foot float and folds it into ground_offset (see retarget()). The warmup foot pose
+        # converges within a few dozen iters, so this only needs to leave enough remaining
+        # warmup iters to re-settle onto the ground; it is clamped to warmup_iters//2.
+        self.ground_calib_warmup_iter = params.get('ground_calib_warmup_iter', 200)
+        self._ground_calibrated = False
         # Per-joint acceleration limits [rad/s^2] for the FrameAccelerationLimit (real per-
         # frame limit |Δqpos_t - Δqpos_{t-1}| <= a_max*(1/fps)^2). Enabled by the
         # use_acceleration_limit constructor arg; joints NOT listed are left unconstrained.
@@ -548,13 +564,16 @@ class CollisionFreeMotionRetargeting:
                                 f"{lo:g}-{hi:g} rad/s^2 @ fps={self.motion_fps} "
                                 f"| {len(self._accel_limits_map)} joints")
             print(f"[COLMO] Acceleration limit (soft): {accel_status}")
+            # NOTE: issf_epsilon (and cbf_gain / margin / detect_dist) are resolved PER
+            # collision-limit entry below; parameters.issf_epsilon is only the fallback
+            # default. The actual per-limit values are logged after the limits are built.
             print(f"[COLMO] Collision mode: {self.collision_mode} "
-                  f"(constraint={self.use_collision_constraint}"
-                  f"{f', issf_epsilon={self.issf_epsilon}' if self.use_issf else ''})")
+                  f"(constraint={self.use_collision_constraint})")
         
         # Resolve collision groups and individual geometries
         self.groups = cfg['groups']
         self.all_collision_limits = []
+        _limit_summaries = []       # (name, cbf_gain, margin, detect_dist, issf_eps) for logging
 
 
         # Build collision pair metadata. Each limit provides geom pairs / margin /
@@ -585,6 +604,8 @@ class CollisionFreeMotionRetargeting:
                 )
             margin = float(margin)
             detect_dist = float(detect_dist)
+            _limit_summaries.append(
+                (limit_cfg.get('name', '?'), cbf_gain, margin, detect_dist, issf_eps))
 
             if self.use_issf:
                 limit_obj = ISSfCollisionAvoidanceLimit(
@@ -608,6 +629,14 @@ class CollisionFreeMotionRetargeting:
             # Hard QP inequality (mink's native collision avoidance constraint).
             if self.use_collision_constraint:
                 self.ik_limits.append(limit_obj)
+
+        if verbose and _limit_summaries:
+            print(f"[COLMO] Per-limit collision params ({len(_limit_summaries)} limits; "
+                  f"per-entry values, falling back to parameters: defaults):")
+            for name, g, m, dd, eps in _limit_summaries:
+                extra = f", issf_epsilon={eps:g}" if self.use_issf else ""
+                print(f"[COLMO]   '{name}': cbf_gain={g:g}, margin={m:g}, "
+                      f"detect_dist={dd:g}{extra}")
 
         self.setup_retarget_configuration()
 
@@ -840,7 +869,25 @@ class CollisionFreeMotionRetargeting:
         dt = self.configuration.model.opt.timestep
 
         if not self._warmup_done:
-            for _ in range(self._warmup_iters):
+            # Ground calibration folded into the first-frame warmup: the warmup settles the
+            # robot from rest onto frame 0's (still-floating) targets and converges within a
+            # few dozen iters. Partway through we MEASURE how far the robot's foot actually
+            # floats (FK), fold that into ground_offset, and re-set the targets so the
+            # REMAINING warmup iterations settle the foot straight down onto the ground -- no
+            # separate calibration pass, no second warmup. Needs a roughly grounded frame 0.
+            calib_at = min(self.ground_calib_warmup_iter, self._warmup_iters // 2)
+            do_calib = (not self._ground_calibrated) and bool(self.ground_anchor_bodies)
+            for k in range(self._warmup_iters):
+                if do_calib and k == calib_at:
+                    gap = self.measure_foot_float()
+                    if gap is not None:
+                        self.ground_offset = self.ground_offset + gap
+                        self.update_targets(human_data)     # re-target, now grounded
+                        if self.verbose:
+                            print(f"[COLMO][Ground] Warmup calibration @iter {k}: measured "
+                                  f"foot float {gap:+.4f} m -> ground_offset="
+                                  f"{self.ground_offset:+.4f} m")
+                    self._ground_calibrated = True
                 vel = mink.solve_ik(
                     self.configuration,
                     self.tasks1_solver,
@@ -974,3 +1021,47 @@ class CollisionFreeMotionRetargeting:
             pos, quat = human_data[body_name]
             human_data[body_name][0] = pos - np.array([0, 0, self.ground_offset])
         return human_data
+
+    def _ensure_foot_geom_cache(self):
+        """Cache, once, the floor height and each ground-anchor body's mesh geoms
+        (geom_id + local vertices) so measure_foot_float can find the real foot's lowest
+        world-z. The link MESHES (not the coarse capsule/sphere collision primitives) are
+        the robot's real foot surface, matching the ground metric in eval_kinematic."""
+        if self._foot_mesh_cache is not None:
+            return
+        planes = [g for g in range(self.model.ngeom)
+                  if self.model.geom_type[g] == mj.mjtGeom.mjGEOM_PLANE]
+        self._floor_z = float(self.model.geom_pos[planes[0], 2]) if planes else 0.0
+        cache = []
+        for body_name in self.ground_anchor_bodies:
+            try:
+                bid = self.model.body(body_name).id
+            except KeyError:
+                print(f"[COLMO][Ground] WARNING: anchor body '{body_name}' not in model.")
+                continue
+            for g in range(self.model.ngeom):
+                if int(self.model.geom_bodyid[g]) != bid:
+                    continue
+                if self.model.geom_type[g] != mj.mjtGeom.mjGEOM_MESH:
+                    continue
+                mid = int(self.model.geom_dataid[g])
+                adr = int(self.model.mesh_vertadr[mid])
+                num = int(self.model.mesh_vertnum[mid])
+                cache.append((g, self.model.mesh_vert[adr:adr + num].astype(np.float64)))
+        self._foot_mesh_cache = cache
+
+    def measure_foot_float(self):
+        """Height [m] of the robot's real foot meshes above the floor in the CURRENT
+        configuration (>=0 = floating, <0 = penetrating). Reads the FK already computed by
+        retarget() (mj_fwdPosition/mj_forward), so call it right after a retarget() step.
+        Returns None if no ground-anchor foot bodies/meshes are available."""
+        self._ensure_foot_geom_cache()
+        if not self._foot_mesh_cache:
+            return None
+        data = self.configuration.data
+        lowest = np.inf
+        for gid, verts in self._foot_mesh_cache:
+            zrow = data.geom_xmat[gid].reshape(3, 3)[2]          # world-z row
+            z = float((verts @ zrow + data.geom_xpos[gid][2]).min())
+            lowest = min(lowest, z)
+        return lowest - self._floor_z

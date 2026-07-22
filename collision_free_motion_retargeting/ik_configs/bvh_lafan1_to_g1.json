@@ -2,6 +2,10 @@
     "robot_root_name": "pelvis",
     "human_root_name": "Hips",
     "ground_height": 0.0,
+    "ground_anchor_bodies": [
+        "left_ankle_roll_link",
+        "right_ankle_roll_link"
+    ],
     "human_height_assumption": 1.8,
     "use_ik_match_table1": true,
     "use_ik_match_table2": true,
