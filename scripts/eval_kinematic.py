@@ -1,15 +1,17 @@
 """Kinematic evaluation of retargeted robot motions.
 
 Scores the reference motions produced by several retargeting sources for one robot
-against seven mesh-level kinematic quality metrics (all LOWER = better):
+against these mesh-level kinematic quality metrics (all LOWER = better):
 
   1. Ground penetration frame fraction   P_ground
   2. Mean ground penetration depth        D_ground
   3. Self penetration frame fraction      P_self
   4. Mean self penetration depth          D_self
-  5. Mean foot sliding velocity           V_slide
-  6. Joint velocity violation frame frac. P_vel
-  7. Shoulder roll saturation fraction    P_sat
+  5. Foot slide duration (frac of stance) Slide_dur    (paper detect_foot_sliding)
+  6. Mean foot slide distance             Slide_dist   (paper detect_foot_sliding)
+  7. Mean foot floating distance          Foot_float
+  8. Joint velocity violation frame frac. P_vel
+  9. Shoulder roll saturation fraction    P_sat
 
 Key modelling choices (documented so the numbers are reproducible):
 
@@ -31,10 +33,11 @@ Key modelling choices (documented so the numbers are reproducible):
   MuJoCo's parent-child filtering (filterparent) is left ON.
 
 * Foot CONTACT (stance) is detected from the shared SOURCE human motion (BVH
-  LeftToe/RightToe): a foot is in contact at frame t when its toe's horizontal
-  displacement since t-1 is <= contact_thresh (default 0.01 m) at 30 fps. Robot
-  foot sliding is then the horizontal speed of the robot's toe link over the
-  contact foot-frames.
+  LeftFoot+LeftToe / RightFoot+RightToe) via the LAFAN1 article's own detector
+  (lafan_vendor.utils.extract_feet_contacts): a foot joint is in contact when its
+  per-frame squared 3D displacement is < velfactor (default 0.02, in cm), and the
+  foot counts as stance if EITHER its heel or toe is planted. Robot foot sliding is
+  then the horizontal speed of the robot's toe link over the contact foot-frames.
 
 * Joint velocity limits come from the robot URDF (<limit velocity=...>); the
   per-frame joint velocity is 30*(q_t - q_{t-1}) with a shortest-angle wrap.
@@ -59,6 +62,7 @@ from tqdm import tqdm
 
 from collision_free_motion_retargeting.params import ROBOT_XML_DICT
 from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file
+from collision_free_motion_retargeting.utils.lafan_vendor import utils as lafan_utils
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -330,19 +334,46 @@ def qpos_from(data_dict, meta, t):
     return q
 
 
-def human_contact_labels(bvh_frames, contact_thresh, fps):
-    """(N,) bool per foot: toe horizontal displacement since t-1 <= thresh (stance)."""
+def human_contact_labels(bvh_frames, velfactor=0.02):
+    """(N,) bool per foot from the LAFAN1 vendor foot-contact detector
+    (lafan_vendor.utils.extract_feet_contacts): a foot joint is 'in contact' at frame t when
+    its per-frame squared 3D displacement is < velfactor. Each foot uses its heel
+    (LeftFoot/RightFoot) AND toe (LeftToe/RightToe) joints; the foot counts as in contact
+    if EITHER joint is planted (heel-strike..toe-off stance).
+
+    Positions are taken in cm to match the vendor default velfactor=0.02 (the frame dicts are
+    in meters -> x100). |displacement|^2 is rotation-invariant, so the frame rotation applied
+    by load_bvh_file does not change the result. This replaces the old toe-only horizontal
+    displacement heuristic with the article's velocity-based contact detection."""
     N = len(bvh_frames)
     labels = {"L": np.zeros(N, bool), "R": np.zeros(N, bool)}
-    bone = {"L": "LeftToe", "R": "RightToe"}
-    for f in ("L", "R"):
-        if bone[f] not in bvh_frames[0]:
-            continue
-        xy = np.array([np.asarray(bvh_frames[t][bone[f]][0], np.float64)[:2]
-                       for t in range(N)])
-        disp = np.linalg.norm(np.diff(xy, axis=0), axis=1)   # (N-1,)
-        labels[f][1:] = disp <= contact_thresh
+    bones = ["LeftFoot", "LeftToe", "RightFoot", "RightToe"]   # vendor order: L heel/toe, R heel/toe
+    if N == 0 or not all(b in bvh_frames[0] for b in bones):
+        return labels
+    pos = np.stack([[np.asarray(bvh_frames[t][b][0], np.float64) * 100.0    # -> cm
+                     for b in bones] for t in range(N)])                    # (N, 4, 3)
+    c_l, c_r = lafan_utils.extract_feet_contacts(pos, [0, 1], [2, 3], velfactor=velfactor)
+    labels["L"] = c_l.any(axis=1)     # heel OR toe planted
+    labels["R"] = c_r.any(axis=1)
     return labels
+
+
+def human_toe_sticking(bvh_frames, velfactor=0.02):
+    """Per-foot (N,) bool TOE 'sticking' via the vendor velocity detector on the TOE joints
+    ONLY (LeftToe / RightToe), matching the paper's ['L_Toe','R_Toe'] foot-sticking used by
+    detect_foot_sliding. Positions in cm (frame dicts x100); |displacement|^2 is
+    rotation-invariant so the load_bvh_file rotation does not affect it."""
+    N = len(bvh_frames)
+    out = {"L": np.zeros(N, bool), "R": np.zeros(N, bool)}
+    bones = ["LeftToe", "RightToe"]
+    if N == 0 or not all(b in bvh_frames[0] for b in bones):
+        return out
+    pos = np.stack([[np.asarray(bvh_frames[t][b][0], np.float64) * 100.0
+                     for b in bones] for t in range(N)])               # (N, 2, 3) cm
+    c_l, c_r = lafan_utils.extract_feet_contacts(pos, [0], [1], velfactor=velfactor)
+    out["L"] = c_l[:, 0]
+    out["R"] = c_r[:, 0]
+    return out
 
 
 def evaluate_motion(data_dict, bvh_frames, meta, structural, args, mirrored=False):
@@ -384,25 +415,37 @@ def evaluate_motion(data_dict, bvh_frames, meta, structural, args, mirrored=Fals
     P_self = float(s_hit.mean())
     D_self = float(self_pen[s_hit].mean()) if s_hit.any() else np.nan
 
-    # 5) foot sliding over source-contact foot-frames. For sources stored left-right
-    # MIRRORED (e.g. OmniRetarget), the robot's LEFT foot executes the human's RIGHT
-    # foot motion, so pair robot foot f with the human contact of the mirrored foot.
-    labels = human_contact_labels(bvh_frames, args.contact_thresh, fps)
+    # 5) foot sliding -- faithful to the holosoma / OmniRetarget RetargetingEvaluator
+    # .detect_foot_sliding: the robot toe's per-frame horizontal DISPLACEMENT (meters/frame,
+    # NO fps) over frames where the human TOE is 'sticking'; a frame is a slide when that
+    # displacement exceeds slide_thresh (0.01 m/frame). Two metrics:
+    #   Slide_dur  = (# slide frames) / (# sticking frames)   -- fraction of stance that slides
+    #   Slide_dist = mean per-frame slide displacement (per-frame MAX over the two feet),
+    #                averaged over slide frames  [m/frame -> cm in the report].
+    # Contact is TOE-only (paper's ['L_Toe','R_Toe']); the measurement point is the robot toe
+    # link -- the nearest analog to the paper's ankle_roll contact sphere on this G1 model.
+    # For MIRRORED sources (OmniRetarget), robot foot f uses the mirrored human toe sticking.
     Nc = min(N, len(bvh_frames))
     swap = {"L": "R", "R": "L"}
-    slide_vals = []
+    toe_stick = human_toe_sticking(bvh_frames, args.velfactor)
+    disp = {}
     for f in ("L", "R"):
-        hf = swap[f] if mirrored else f
-        v = fps * np.linalg.norm(np.diff(toe_xy[f], axis=0), axis=1)   # (N-1,)
-        c = labels[hf][1:Nc]                                           # align to v[0:Nc-1]
-        vv = v[:Nc - 1][c]
-        slide_vals.append(vv[~np.isnan(vv)])
-    slide_all = np.concatenate(slide_vals) if slide_vals else np.array([])
-    V_slide = float(slide_all.mean()) if slide_all.size else np.nan
+        d_f = np.linalg.norm(np.diff(toe_xy[f], axis=0), axis=1)       # (N-1,) m/frame, NO fps
+        disp[f] = np.nan_to_num(np.concatenate([[0.0], d_f]))[:Nc]     # (Nc,)
+    stick = {f: toe_stick[swap[f] if mirrored else f][:Nc] for f in ("L", "R")}
+    slide = {f: stick[f] & (disp[f] > args.slide_thresh) for f in ("L", "R")}
+    num_stick = int((stick["L"] | stick["R"]).sum())
+    per_frame_slide = np.maximum(disp["L"] * slide["L"], disp["R"] * slide["R"])   # (Nc,)
+    slides = per_frame_slide[per_frame_slide > 0]
+    Slide_dur = float(len(slides) / num_stick) if num_stick > 0 else np.nan
+    # per-FRAME displacement [m/frame] (NO fps, exactly as the paper); reported x100 and
+    # labeled cm/s to match the paper's table (its code does not apply fps either).
+    Slide_dist = float(slides.mean()) if slides.size else np.nan
 
     # 5b) foot floating: mean of the robot foot's closest distance to the ground over the
-    # reference-contact frames of that foot (same mirror-aware pairing as foot sliding).
-    # Positive = the foot hovers above the ground while the human foot is planted.
+    # reference-contact frames of that foot (heel+toe contact, mirror-aware). Positive = the
+    # foot hovers above the ground while the human foot is planted.
+    labels = human_contact_labels(bvh_frames, args.velfactor)
     float_vals = []
     for f in ("L", "R"):
         hf = swap[f] if mirrored else f
@@ -433,7 +476,7 @@ def evaluate_motion(data_dict, bvh_frames, meta, structural, args, mirrored=Fals
         sat_frac = float(sat.mean())                                 # averages over joints & frames
 
     return dict(N=N, P_ground=P_ground, D_ground=D_ground, Foot_float=Foot_float,
-                P_self=P_self, D_self=D_self, V_slide=V_slide,
+                P_self=P_self, D_self=D_self, Slide_dur=Slide_dur, Slide_dist=Slide_dist,
                 P_vel=P_vel, P_sat=sat_frac)
 
 
@@ -473,8 +516,13 @@ def main():
     ap.add_argument("--pen_thresh", type=float, default=0.01, help="Self-penetration threshold [m].")
     ap.add_argument("--ground_thresh", type=float, default=0.01,
                     help="Ground-penetration threshold [m] (default: --pen_thresh).")
-    ap.add_argument("--contact_thresh", type=float, default=0.01,
-                    help="Human toe stance displacement threshold [m/frame].")
+    ap.add_argument("--velfactor", type=float, default=0.02,
+                    help="LAFAN1 foot-contact velocity threshold (squared cm/frame) for "
+                         "lafan_vendor extract_feet_contacts (default 0.02).")
+    ap.add_argument("--slide_thresh", type=float, default=0.01,
+                    help="Foot-slide threshold: per-frame toe horizontal displacement "
+                         "[m/frame] above which a sticking foot counts as sliding "
+                         "(paper detect_foot_sliding default 0.01).")
     ap.add_argument("--eta", type=float, default=0.05, help="Shoulder saturation margin (range frac).")
     ap.add_argument("--mirror", nargs="*", default=["omniretarget"], metavar="ALGO",
                     help="Sources stored left-right mirrored vs the source human "
@@ -507,7 +555,7 @@ def main():
     # BVH (source human) contact frames are shared by all sources of a motion.
     per_rows = []          # (motion, algo, metrics...)
     agg = {k: {m: [] for m in ("P_ground", "D_ground", "Foot_float", "P_self", "D_self",
-                               "V_slide", "P_vel", "P_sat")} for k in args.algos}
+                               "Slide_dur", "Slide_dist", "P_vel", "P_sat")} for k in args.algos}
 
     for motion in tqdm(motions, desc="motions"):
         bvh_path = Path(args.motion_dir) / f"{motion}.bvh"
@@ -552,7 +600,11 @@ def main():
         ("D_ground",   "Ground pen depth cm",  100, 3),
         ("P_self",     "Self penetration %",   100, 2),
         ("D_self",     "Self pen depth cm",    100, 3),
-        ("V_slide",    "Foot sliding cm/s",    100, 2),
+        ("Slide_dur",  "Foot slide dur %",     100, 2),
+        # NOTE: labeled cm/s to match the paper's table, but (like the paper's
+        # detect_foot_sliding) this is a per-FRAME displacement -- fps is NOT applied, so it
+        # is really cm/frame. Multiplying by fps (~49 cm/s) would NOT match the paper's ~1-2.
+        ("Slide_dist", "Foot slide cm/s",      100, 3),
         ("Foot_float", "Foot floating cm",     100, 3),
         ("P_vel",      "Vel violation %",      100, 2),
         ("P_sat",      "Shoulder sat %",       100, 2),
@@ -579,12 +631,13 @@ def main():
         with open(out, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["motion", "source", "frames", "P_ground", "D_ground_m",
-                        "FootFloat_m", "P_self", "D_self_m", "V_slide_mps", "P_vel", "P_sat"])
+                        "FootFloat_m", "P_self", "D_self_m", "SlideDur", "SlideDist_m",
+                        "P_vel", "P_sat"])
             for motion, key, r in per_rows:
                 w.writerow([motion, ALGO_TABLE[key]["label"], r["N"],
                             r["P_ground"], r["D_ground"], r["Foot_float"],
                             r["P_self"], r["D_self"],
-                            r["V_slide"], r["P_vel"], r["P_sat"]])
+                            r["Slide_dur"], r["Slide_dist"], r["P_vel"], r["P_sat"]])
         print(f"[eval] per-motion metrics -> {out}")
 
 
