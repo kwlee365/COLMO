@@ -53,7 +53,7 @@ ALGO_TABLE = {
                   color=(0.20, 0.80, 0.35, 1.0)),
     "gmr": dict(subdir="gmr", suffix="", label="GMR",
                 color=(0.25, 0.50, 1.00, 1.0)),
-    "omniretarget": dict(subdir="omniretarget", suffix="_original",
+    "omniretarget": dict(subdir="omniretarget", suffix="",
                          label="OmniRetarget", color=(1.00, 0.55, 0.10, 1.0)),
 }
 

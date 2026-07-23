@@ -69,7 +69,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Per-source pkl location and filename suffix (mirrors vis_compare_retargeting).
 ALGO_TABLE = {
     "gmr":          dict(subdir="gmr",          suffix="",          label="GMR"),
-    "omniretarget": dict(subdir="omniretarget", suffix="_original", label="OmniRetarget"),
+    "omniretarget": dict(subdir="omniretarget", suffix="", label="OmniRetarget"),
     "colmo":        dict(subdir="colmo",        suffix="",          label="COLMO"),
     "unitree":      dict(subdir="unitree",      suffix="",          label="Unitree LAFAN1"),
 }
