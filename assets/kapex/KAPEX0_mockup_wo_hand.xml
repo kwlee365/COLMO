@@ -1,4 +1,5 @@
 <mujoco model="KAPEX0_mockup_wo_hand_260615">
+  <option timestep='0.001' iterations="50" tolerance="1e-5" solver="Newton" jacobian="dense" cone="elliptic" noslip_iterations="30" noslip_tolerance="1e-5"/>
   <compiler angle="radian" meshdir="meshes" autolimits="true" discardvisual="false"/>
 
   <default>
@@ -10,7 +11,7 @@
       <geom conaffinity="0" contype="0" density="0" group="1"/>
     </default>
     <default class="collision_geom">
-      <geom conaffinity="1" contype="1" density="0" group="3" rgba="1 0 0 0.4"/>
+      <geom conaffinity="1" contype="1" density="0" group="2" rgba="1 0 0 0.4"/>
     </default>
     <!-- Hip Roll, Yaw & Shoulder Pitch, Roll -->
     <default class="actuator_RO80">
@@ -237,7 +238,8 @@
                     <!-- toe joint fixed (rigidly attached to parent) -->
                     <geom class="visual_geom" type="mesh" material="black" mesh="left_toe_pitch_link"/>
                     <!-- <geom class="collision_geom" type="mesh" mesh="left_toe_pitch_collision_link"/> -->
-                    <geom name="Left_Foot" class="collision_geom" size="0.06 0.08" pos="-0.045 0 0.01" quat="0.707107 0 0.707107 0" type="capsule"/>
+                    <geom name="Left_Foot1" class="collision_geom" size="0.03 0.11" pos="-0.045 +0.022 0.0" quat="0.707107 0 0.707107 0" type="capsule"/>
+                    <geom name="Left_Foot2" class="collision_geom" size="0.03 0.11" pos="-0.045 -0.022 0.0" quat="0.707107 0 0.707107 0" type="capsule"/>
 
                     <body name="left_toe_pitch_link_cover">
                       <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
@@ -301,8 +303,8 @@
                     <!-- toe joint fixed (rigidly attached to parent) -->
                     <geom class="visual_geom" type="mesh" material="black" mesh="right_toe_pitch_link"/>
                     <!-- <geom class="collision_geom" type="mesh" mesh="right_toe_pitch_collision_link"/> -->
-                    <geom name="Right_Foot" class="collision_geom" size="0.06 0.08" pos="-0.045 0 0.01" quat="0.707107 0 0.707107 0" type="capsule"/>
-
+                    <geom name="Right_Foot1" class="collision_geom" size="0.03 0.11" pos="-0.045 +0.022 0.0" quat="0.707107 0 0.707107 0" type="capsule"/>
+                    <geom name="Right_Foot2" class="collision_geom" size="0.03 0.11" pos="-0.045 -0.022 0.0" quat="0.707107 0 0.707107 0" type="capsule"/>
                     <body name="right_toe_pitch_link_cover">
                       <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
                       <geom class="visual_geom" type="mesh" material="space_gray" mesh="right_toe_pitch_link_cover"/>

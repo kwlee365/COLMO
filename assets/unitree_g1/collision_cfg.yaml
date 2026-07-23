@@ -105,23 +105,21 @@ groups:
   torso: ["Pelvis", "Chest", "Head"]
   torso_upper: ["Chest", "Head"]
   
+  l_arm: ["Left_Upper_Arm", "Left_Forearm", "Left_Elbow","Left_Hand1"]
+  r_arm: ["Right_Upper_Arm", "Right_Forearm", "Right_Elbow", "Right_Hand1"]
   l_arm_upper: ["Left_Upper_Arm"]
   r_arm_upper: ["Right_Upper_Arm"]
   l_arm_lower: ["Left_Forearm", "Left_Elbow","Left_Hand1"]
   r_arm_lower: ["Right_Forearm", "Right_Elbow", "Right_Hand1"]
   
-
+  l_leg: ["Left_Upper_Leg1", "Left_Upper_Leg2", "Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot1", "Left_Foot2"]
+  r_leg: ["Right_Upper_Leg1", "Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot1", "Right_Foot2"]
   l_leg_upper: ["Left_Upper_Leg1"]
   r_leg_upper: ["Right_Upper_Leg1"]
   l_leg_lower: ["Left_Upper_Leg2","Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot1", "Left_Foot2"]
   r_leg_lower: ["Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot1", "Right_Foot2"]
 
-  l_arm: ["Left_Upper_Arm", "Left_Forearm", "Left_Elbow","Left_Hand1"]
-  r_arm: ["Right_Upper_Arm", "Right_Forearm", "Right_Elbow", "Right_Hand1"]
-  l_arm_lower: ["Left_Forearm", "Left_Elbow","Left_Hand1"]
-  r_arm_lower: ["Right_Forearm", "Right_Elbow", "Right_Hand1"]
-  l_leg: ["Left_Upper_Leg1", "Left_Upper_Leg2", "Left_Lower_Leg", "Left_Lower_Leg2", "Left_Foot1", "Left_Foot2"]
-  r_leg: ["Right_Upper_Leg1", "Right_Upper_Leg2", "Right_Lower_Leg", "Right_Lower_Leg2", "Right_Foot1", "Right_Foot2"]
+
   ground: ["floor"]
 
 
@@ -151,7 +149,7 @@ collision_limits:
       - ["r_leg", "ground"]
       - ["l_leg", "ground"]
       - ["torso", "ground"]
-    margin: 0.0
-    detect_dist: 0.05
     cbf_gain: 1.0
     issf_epsilon: 1000.0
+    margin: 0.0
+    detect_dist: 0.05

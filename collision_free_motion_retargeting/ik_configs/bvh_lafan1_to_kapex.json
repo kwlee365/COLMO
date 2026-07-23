@@ -18,8 +18,8 @@
         "RightLeg": 1.0,
         "LeftFootMod": 1.0,
         "RightFootMod": 1.0,
-        "LeftArm": 0.85,
-        "RightArm": 0.85,
+        "LeftArm": 0.75,
+        "RightArm": 0.75,
         "LeftForeArm": 0.95,
         "RightForeArm": 0.95,
         "LeftHand": 1.0,
@@ -191,14 +191,14 @@
         ],
         "left_elbow_link": [
             "LeftForeArm",
-            0,
+            100,
             10,
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
         ],
         "left_wrist_pitch_link": [
             "LeftHand",
-            100,
+            10,
             10,
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
@@ -212,14 +212,14 @@
         ],
         "right_elbow_link": [
             "RightForeArm",
-            0,
+            100,
             10,
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
         ],
         "right_wrist_pitch_link": [
             "RightHand",
-            100,
+            10,
             10,
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
