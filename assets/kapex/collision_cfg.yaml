@@ -1,7 +1,7 @@
 # Robot body group definitions and self-collision limit parameters
 parameters:
   # REQUIRED (no code default): construction raises if any of these is missing.
-  damping: 0.05              # Levenberg-Marquardt regularization of the IK QP
+  damping: 5.0              # Levenberg-Marquardt regularization of the IK QP
   max_iter: 10              # IK iterations per frame
   # IK solver / loop tuning (externalized; code keeps back-compat defaults if omitted).
   solver : daqp             # QP backend passed to mink.solve_ik
@@ -10,6 +10,9 @@ parameters:
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
   ground_offset : -0.02    # per-frame robot ground offset [m] (apply_ground_offset)
+  
+  
+  ground_calib_warmup_iter : 200
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
 
@@ -110,19 +113,17 @@ parameters:
     right_wrist_roll_joint: 288.9
     right_wrist_pitch_joint: 288.9
 
-  cbf_gain : 1.5 # alpha = 1.5
-  issf_epsilon : 600.0
 
 groups:
-  torso: ["Pelvis", "Chest", "Head"]
-  torso_upper: ["Chest", "Head"]
+  torso: ["Pelvis1", "Pelvis2", "Chest1", "Chest2", "Chest3", "Head"]
+  torso_upper: ["Chest1", "Chest2", "Chest3","Head"]
 
-  l_arm: ["Left_Upper_Arm", "Left_Forearm"]
-  r_arm: ["Right_Upper_Arm", "Right_Forearm"]
+  l_arm: ["Left_Upper_Arm1", "Left_Upper_Arm2", "Left_Forearm"]
+  r_arm: ["Right_Upper_Arm1", "Right_Upper_Arm2", "Right_Forearm"]
   l_arm_lower: ["Left_Forearm"]
   r_arm_lower: ["Right_Forearm"]
-  l_arm_upper: ["Left_Upper_Arm"]
-  r_arm_upper: ["Right_Upper_Arm"]
+  l_arm_upper: ["Left_Upper_Arm1", "Left_Upper_Arm2"]
+  r_arm_upper: ["Right_Upper_Arm1", "Right_Upper_Arm2"]
 
   l_leg: ["Left_Upper_Leg", "Left_Lower_Leg", "Left_Foot"]
   r_leg: ["Right_Upper_Leg", "Right_Lower_Leg", "Right_Foot"]
@@ -143,6 +144,8 @@ collision_limits:
       - ["r_arm", "l_arm"]
       - ["l_arm", "torso"]
       - ["r_arm", "torso"]
+    cbf_gain : 1.5 # alpha = 1.5
+    issf_epsilon : 600.0
     margin: 0.0
     detect_dist: 0.05
 
@@ -153,5 +156,7 @@ collision_limits:
       - ["r_leg", "ground"]
       - ["l_leg", "ground"]
       - ["torso", "ground"]
+    cbf_gain : 1.5 # alpha = 1.5
+    issf_epsilon : 1000.0
     margin: 0.0
     detect_dist: 0.05

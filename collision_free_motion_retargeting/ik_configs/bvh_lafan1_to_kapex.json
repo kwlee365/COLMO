@@ -5,19 +5,23 @@
     "human_height_assumption": 1.8,
     "use_ik_match_table1": true,
     "use_ik_match_table2": true,
+    "ground_anchor_bodies": [
+        "left_ankle_roll_link",
+        "right_ankle_roll_link"
+    ],
     "human_scale_table": {
         "Hips": 1.0,
-        "Spine2": 1.0,
+        "Spine2": 1.1,
         "LeftUpLeg": 1.1,
         "RightUpLeg": 1.1,
         "LeftLeg": 1.0,
         "RightLeg": 1.0,
         "LeftFootMod": 1.0,
         "RightFootMod": 1.0,
-        "LeftArm": 0.9,
-        "RightArm": 0.9,
-        "LeftForeArm": 0.9,
-        "RightForeArm": 0.9,
+        "LeftArm": 0.85,
+        "RightArm": 0.85,
+        "LeftForeArm": 0.95,
+        "RightForeArm": 0.95,
         "LeftHand": 1.0,
         "RightHand": 1.0
     },
@@ -25,7 +29,7 @@
         "pelvis": [
             "Hips",
             0,
-            10,
+            100,
             [0.0, 0.0, 0.0],
             [0.5, 0.5, 0.5, 0.5]
         ],
@@ -74,14 +78,14 @@
         "waist_pitch_link": [
             "Spine2",
             0,
-            100,
+            [120, 120, 50],
             [0.0, 0.0, 0.0],
             [0.5, 0.5, 0.5, 0.5]
         ],
         "left_shoulder_roll_link": [
             "LeftArm",
             0,
-            100,
+            [100, 100, 100],
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
         ],
@@ -102,7 +106,7 @@
         "right_shoulder_roll_link": [
             "RightArm",
             0,
-            100,
+            [100, 100, 100],
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
         ],
@@ -124,7 +128,7 @@
     "ik_match_table2": {
         "pelvis": [
             "Hips",
-            100,
+            200,
             100,
             [0.0, 0.0, 0.0],
             [0.5, 0.5, 0.5, 0.5]
@@ -145,7 +149,7 @@
         ],
         "left_ankle_roll_link": [
             "LeftFootMod",
-            100,
+            200,
             10,
             [0.0, 0.0, 0.0],
             [0.67059768, -0.67059768, 0.22427384, -0.22427384]
@@ -166,7 +170,7 @@
         ],
         "right_ankle_roll_link": [
             "RightFootMod",
-            100,
+            200,
             10,
             [0.0, 0.0, 0.0],
             [0.67059768, -0.67059768, 0.22427384, -0.22427384]
@@ -174,20 +178,20 @@
         "waist_pitch_link": [
             "Spine2",
             0,
-            100,
+            [50, 50, 50],
             [0.0, 0.0, 0.0],
             [0.5, 0.5, 0.5, 0.5]
         ],
         "left_shoulder_roll_link": [
             "LeftArm",
             5,
-            10,
+            [10, 10, 10],
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
         ],
         "left_elbow_link": [
             "LeftForeArm",
-            10,
+            0,
             10,
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
@@ -202,13 +206,13 @@
         "right_shoulder_roll_link": [
             "RightArm",
             5,
-            10,
+            [10, 10, 10],
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
         ],
         "right_elbow_link": [
             "RightForeArm",
-            10,
+            0,
             10,
             [0.0, 0.0, 0.0],
             [0.5,0.5,-0.5,-0.5]
