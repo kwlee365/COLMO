@@ -118,8 +118,10 @@ groups:
   torso: ["Pelvis1", "Pelvis2", "Chest1", "Chest2", "Chest3", "Head"]
   torso_upper: ["Chest1", "Chest2", "Chest3","Head"]
 
-  l_arm: ["Left_Upper_Arm1", "Left_Upper_Arm2", "Left_Forearm"]
-  r_arm: ["Right_Upper_Arm1", "Right_Upper_Arm2", "Right_Forearm"]
+  l_arm_all: ["Left_Upper_Arm1", "Left_Upper_Arm2", "Left_Forearm"]
+  r_arm_all: ["Right_Upper_Arm1", "Right_Upper_Arm2", "Right_Forearm"]
+  l_arm: ["Left_Upper_Arm2", "Left_Forearm"]
+  r_arm: ["Right_Upper_Arm2", "Right_Forearm"]
   l_arm_lower: ["Left_Forearm"]
   r_arm_lower: ["Right_Forearm"]
   l_arm_upper: ["Left_Upper_Arm1", "Left_Upper_Arm2"]
@@ -142,13 +144,13 @@ collision_limits:
       - ["r_arm", "l_leg"]
       - ["r_arm", "r_leg"]
       - ["r_arm", "l_arm"]
-      - ["l_arm_lower", "torso"]
-      - ["r_arm_lower", "torso"]
+      - ["l_arm", "torso"]
+      - ["r_arm", "torso"]
       - ["l_leg", "torso_upper"]
       - ["r_leg", "torso_upper"]
     cbf_gain : 1.0 # alpha = 1.5
     issf_epsilon : 200.0
-    margin: 0.0
+    margin: 0.02
     detect_dist: 0.05
 
   - name: "ground_collision"

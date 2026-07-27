@@ -213,6 +213,18 @@ def robot_metadata(robot):
         hand_pen_geoms.extend(spheres)
         hand_mesh_skip.update(gid for gid in mesh_geom_ids
                               if int(model.geom_bodyid[gid]) == hb)
+        # SELF-collision (mj_collision) must ALSO treat the hand as its coarse Hand1 sphere,
+        # not the finger mesh: the fine mesh's finger-inclusive convex hull registers phantom
+        # hand-hand contacts while the palms are still 12-15 cm apart (the same finger
+        # false-positive removed for ground pen. above). Disable the fine hand-mesh collision
+        # and enable the sphere so mj_collision uses the sphere -- consistent with ground.
+        for gid in mesh_geom_ids:
+            if int(model.geom_bodyid[gid]) == hb:
+                model.geom_contype[gid] = 0
+                model.geom_conaffinity[gid] = 0
+        for g, _ in spheres:
+            model.geom_contype[g] = 1
+            model.geom_conaffinity[g] = 1
 
     return dict(model=model, data=mj.MjData(model),
                 mesh_geom_ids=mesh_geom_ids, geom_verts=geom_verts,
@@ -244,15 +256,24 @@ def structural_self_pairs(meta):
     return pairs
 
 
-def _ancestors(model, b):
-    """Body ids on the path from body b up to (and including) the world root."""
+def _weld_ancestors(model, b):
+    """Weld-body ids on the path from body b's WELD body up to (and including) the world
+    root. Jointless bodies are collapsed onto their weld parent (model.body_weldid), so a
+    cosmetic cover rigidly fixed to link X (e.g. pelvis_link_cover_1 welded to pelvis, which
+    has no joint of its own) is treated as X itself. Without this collapse the cover hangs off
+    the raw body tree as its OWN sibling branch, so an ancestor/descendant test misses that it
+    is really part of X's serial chain -- letting the cover's inflated convex hull register a
+    spurious "cross-chain" self-collision against X's own neighbours (e.g.
+    pelvis_link_cover_1<->waist_yaw_link, a fixed pelvis-waist overlap that dominates the
+    kapex self-penetration metric)."""
     chain = set()
+    w = int(model.body_weldid[b])
     while True:
-        chain.add(b)
-        p = int(model.body_parentid[b])
-        if p == b:                       # world (id 0) is its own parent
+        chain.add(w)
+        pw = int(model.body_weldid[model.body_parentid[w]])
+        if pw == w:                      # world (weld id 0) is its own weld parent
             break
-        b = p
+        w = pw
     return chain
 
 
@@ -263,14 +284,22 @@ def same_chain_pairs(meta):
     self-penetration metric (cf. ReactOR: "collisions within same kinematic chain ignored").
     This subsumes the parent-child cases filterparent already drops, plus the deeper
     same-limb overlaps (foot<->hip, upper-arm<->torso, thigh<->pelvis). Cross-chain
-    collisions (hand<->hand, hand<->opposite leg, arm<->same-side leg) are KEPT."""
+    collisions (hand<->hand, hand<->opposite leg, arm<->same-side leg) are KEPT.
+
+    Bodies are compared by their WELD body (see _weld_ancestors): a zero-joint cover link is
+    collapsed onto the link it is bolted to before the ancestor test, so a cover inherits its
+    parent link's same-chain exclusions instead of leaking through as a separate branch.
+    Robots without cover/welded bodies (G1, H1) are unaffected -- there weld id == body id, so
+    this reduces exactly to the raw-body ancestor test."""
     model = meta["model"]
-    anc = {b: _ancestors(model, b) for b in range(model.nbody)}
+    wanc = {b: _weld_ancestors(model, b) for b in range(model.nbody)}
     pairs = set()
     for b1 in range(1, model.nbody):                       # skip world
+        w1 = int(model.body_weldid[b1])
         n1 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, b1)
         for b2 in range(b1 + 1, model.nbody):
-            if b1 in anc[b2] or b2 in anc[b1]:             # one is ancestor of the other
+            # one weld body is an ancestor of the other (welds collapsed)
+            if w1 in wanc[b2] or int(model.body_weldid[b2]) in wanc[b1]:
                 n2 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, b2)
                 pairs.add(frozenset((n1, n2)))
     return pairs
@@ -455,12 +484,16 @@ def evaluate_motion(data_dict, bvh_frames, meta, structural, args, mirrored=Fals
     float_all = np.concatenate(float_vals) if float_vals else np.array([])
     Foot_float = float(float_all.mean()) if float_all.size else np.nan
 
-    # 6) joint velocity violation frame fraction (shortest-angle diff, 30 fps)
+    # 6) joint velocity violation frame fraction (shortest-angle diff, 30 fps). A frame
+    # counts as a violation only if some joint exceeds (1 + vel_margin) * v_max, so joints
+    # merely SATURATED at the limit (soft-limit clamping, ~0 overshoot) are not flagged --
+    # only real overshoots beyond the margin. vel_margin=0 recovers the strict > v_max test.
     dof = np.asarray(data_dict["dof_pos"], np.float64)
     dq = np.diff(dof, axis=0)
     dq = (dq + np.pi) % (2 * np.pi) - np.pi
     qdot = fps * dq                                                    # (N-1, n_dof)
-    viol = (np.abs(qdot) > meta["vmax"][None, :]).any(axis=1)
+    vlim = (1.0 + args.vel_margin) * meta["vmax"][None, :]
+    viol = (np.abs(qdot) > vlim).any(axis=1)
     P_vel = float(viol.mean()) if viol.size else np.nan
 
     # 7) shoulder roll saturation fraction (eta band of joint range, both sides)
@@ -513,6 +546,12 @@ def main():
     ap.add_argument("--motion_dir", default=str(REPO_ROOT / "human_motion" / "lafan1"))
     ap.add_argument("--algos", nargs="+",
                     default=["gmr", "omniretarget", "colmo"])
+    ap.add_argument("--sources", nargs="+", default=None, metavar="SUBDIR[:LABEL]",
+                    help="Explicit result subfolders to compare (OVERRIDES --algos), e.g. "
+                         "'--sources colmo colmo_cbf'. Each item is 'subdir' or 'subdir:Label' "
+                         "(or 'subdir:Label:suffix'); the filename suffix defaults to empty. "
+                         "Lets you compare ANY subfolders of --results_dir, not just the "
+                         "built-in gmr/omniretarget/colmo/unitree.")
     ap.add_argument("--pen_thresh", type=float, default=0.01, help="Self-penetration threshold [m].")
     ap.add_argument("--ground_thresh", type=float, default=0.01,
                     help="Ground-penetration threshold [m] (default: --pen_thresh).")
@@ -524,6 +563,11 @@ def main():
                          "[m/frame] above which a sticking foot counts as sliding "
                          "(paper detect_foot_sliding default 0.01).")
     ap.add_argument("--eta", type=float, default=0.05, help="Shoulder saturation margin (range frac).")
+    ap.add_argument("--vel_margin", type=float, default=0.0,
+                    help="Joint-velocity violation tolerance: a frame counts as a violation "
+                         "only if a joint exceeds (1+vel_margin)*v_max, so joints saturated AT "
+                         "the limit (soft-limit clamping) are not flagged. E.g. 0.10 = 10%% "
+                         "over-limit. Default 0.0 (strict > v_max).")
     ap.add_argument("--mirror", nargs="*", default=["omniretarget"], metavar="ALGO",
                     help="Sources stored left-right mirrored vs the source human "
                          "(default: omniretarget); their foot-contact L/R pairing is "
@@ -534,6 +578,19 @@ def main():
     ap.add_argument("--stride", type=int, default=1, help="Frame stride (>1 = faster, approximate).")
     ap.add_argument("--out", default=None, help="Per-motion CSV output path.")
     args = ap.parse_args()
+
+    # Custom source folders (e.g. compare colmo vs colmo_cbf). Each --sources item registers a
+    # source in ALGO_TABLE and overrides --algos, so ANY result subfolder can be compared.
+    if args.sources:
+        keys = []
+        for spec in args.sources:
+            parts = spec.split(":")
+            subdir = parts[0]
+            label = parts[1] if len(parts) > 1 and parts[1] else subdir
+            suffix = parts[2] if len(parts) > 2 else ""
+            ALGO_TABLE[subdir] = dict(subdir=subdir, suffix=suffix, label=label)
+            keys.append(subdir)
+        args.algos = keys
 
     meta = robot_metadata(args.robot)
     structural = structural_self_pairs(meta)
@@ -556,6 +613,7 @@ def main():
     per_rows = []          # (motion, algo, metrics...)
     agg = {k: {m: [] for m in ("P_ground", "D_ground", "Foot_float", "P_self", "D_self",
                                "Slide_dur", "Slide_dist", "P_vel", "P_sat")} for k in args.algos}
+    _dof_warned = set()    # sources skipped for a model/data dof mismatch (warn once each)
 
     for motion in tqdm(motions, desc="motions"):
         bvh_path = Path(args.motion_dir) / f"{motion}.bvh"
@@ -567,6 +625,17 @@ def main():
             if not path.exists():
                 continue
             d = load_pkl(path)
+            # Skip (don't crash) when the motion's joint count doesn't match the --robot model
+            # -- almost always a --robot / --results_dir mismatch (e.g. kapex model, g1 data).
+            ndof_data = int(np.asarray(d["dof_pos"]).shape[1])
+            if ndof_data != meta["n_dof"]:
+                if key not in _dof_warned:
+                    print(f"\n[eval][WARN] skipping source '{ALGO_TABLE[key]['label']}': its "
+                          f"motions have {ndof_data} joints but the '{args.robot}' model has "
+                          f"{meta['n_dof']}. Check that --robot matches --results_dir "
+                          f"(e.g. --robot kapex needs --results_dir results/kapex/...).")
+                    _dof_warned.add(key)
+                continue
             if args.stride > 1:
                 d = {**d, "root_pos": d["root_pos"][::args.stride],
                      "root_rot": np.asarray(d["root_rot"])[::args.stride],
@@ -609,7 +678,9 @@ def main():
         ("P_vel",      "Vel violation %",      100, 2),
         ("P_sat",      "Shoulder sat %",       100, 2),
     ]
-    order = [k for k in ("gmr", "omniretarget", "unitree", "colmo") if k in args.algos]
+    _known = ("gmr", "omniretarget", "unitree", "colmo")
+    order = ([k for k in _known if k in args.algos]
+             + [k for k in args.algos if k not in _known])   # keep custom --sources too
     labels = [ALGO_TABLE[k]["label"] for k in order]
     cw = 17
     width = 22 + cw * len(order)
