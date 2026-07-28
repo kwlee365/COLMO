@@ -111,7 +111,7 @@ if __name__ == "__main__":
         actual_human_height=actual_human_height,
         collision_mode=args.collision_mode,
     )
-    
+    retargeter.adjust_hips_scale_for_motion(lafan1_data_frames)
     # Spacebar toggles pause in the viewer.
     paused = False
     def keyboard_callback(keycode):
@@ -178,7 +178,6 @@ if __name__ == "__main__":
 
         # retarget
         qpos = retargeter.retarget(smplx_data)
-
         
 
         # visualize
@@ -227,6 +226,6 @@ if __name__ == "__main__":
 
     # Close progress bar
     pbar.close()
-    
+
     robot_motion_viewer.close()
        

@@ -56,6 +56,8 @@ def process_one_bvh(
         actual_human_height=actual_human_height,
         collision_mode=collision_mode,
     )
+    # Per-motion base horizontal-speed cap (collision_cfg max_base_horizontal_speed).
+    retarget.adjust_hips_scale_for_motion(lafan1_data_frames)
 
     # Retarget per frame
     qpos_list = []

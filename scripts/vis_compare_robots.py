@@ -656,7 +656,7 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                       encoding="utf-8") as f:
                 ik_config = json.load(f)
             ratio = height / ik_config["human_height_assumption"]
-            base_scale = {k: v * ratio
+            base_scale = {k: np.asarray(v, dtype=float) * ratio
                           for k, v in ik_config["human_scale_table"].items()}
             h_root = ik_config["human_root_name"]
             eff_scale = build_effective_scale(bones, parents, base_scale)

@@ -9,6 +9,11 @@ parameters:
   ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
+  # Per-MOTION cap [m/s] on the robot base horizontal speed. Before each motion,
+  # adjust_hips_scale_for_motion() shrinks the Hips xy scale ONLY when that motion's (scaled)
+  # base peak would exceed this (min(nominal, limit/peak)); slower motions stay faithful.
+  # Comment out to disable. Caps the scaled-reference peak (robot actual can overshoot ~1.5x).
+  max_base_horizontal_speed : 3.0
   ground_offset : 0.0    # per-frame robot ground offset [m] (apply_ground_offset)
   # Warmup iteration at which the first-frame ground calibration measures the robot foot
   # float (via FK) and folds it into ground_offset; remaining warmup iters re-settle the

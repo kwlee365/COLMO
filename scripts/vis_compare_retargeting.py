@@ -583,9 +583,36 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                       encoding="utf-8") as f:
                 ik_config = json.load(f)
             ratio = height / ik_config["human_height_assumption"]
-            base_scale = {k: v * ratio
+            base_scale = {k: np.asarray(v, dtype=float) * ratio
                           for k, v in ik_config["human_scale_table"].items()}
             h_root = ik_config["human_root_name"]
+            # Match COLMO's per-motion base-speed cap on the drawn skeleton: shrink the root
+            # (Hips) xy scale exactly like adjust_hips_scale_for_motion (min(scale, limit/peak99.5)),
+            # so the human overlay travels at the same (capped) speed as the COLMO robot. Reads
+            # max_base_horizontal_speed from the --robot's collision_cfg; no-op if unset.
+            try:
+                import yaml
+                _pp = yaml.safe_load(
+                    open(ROBOT_XML_DICT[args.robot].parent / "collision_cfg.yaml"))["parameters"]
+                _limit = _pp.get("max_base_horizontal_speed")
+                _fps = float(_pp.get("motion_fps", 30))
+            except Exception:
+                _limit, _fps = None, 30.0
+            if _limit and float(_limit) > 0 and h_root in base_scale and len(frames) > 1:
+                _rxy = np.array([np.asarray(frames[t][h_root][0], float)[:2]
+                                 for t in range(len(frames))])
+                _v = np.linalg.norm(np.diff(_rxy, axis=0), axis=1) * _fps
+                _peak = float(np.percentile(_v, 99.5))
+                if _peak > 1e-9:
+                    _cap = float(_limit) / _peak
+                    _s = np.array(base_scale[h_root], dtype=float)
+                    if _s.ndim == 0:
+                        _s = np.array([float(_s)] * 3)
+                    _s[0] = min(float(_s[0]), _cap)
+                    _s[1] = min(float(_s[1]), _cap)
+                    base_scale[h_root] = _s
+                    print(f"[skeleton] base-speed cap {_limit} m/s -> Hips xy scale "
+                          f"{float(_s[0]):.4f} (peak {_peak:.2f} m/s)")
             eff_scale = build_effective_scale(bones, parents, base_scale)
 
             # Frame-0 facing from the hip line (convention-independent, so it

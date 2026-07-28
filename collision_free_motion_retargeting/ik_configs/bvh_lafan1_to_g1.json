@@ -10,7 +10,7 @@
     "use_ik_match_table1": true,
     "use_ik_match_table2": true,
     "human_scale_table": {
-        "Hips": 0.9,
+        "Hips": [0.7, 0.7, 0.9],
         "Spine2": 0.9,
         "LeftUpLeg": 0.9,
         "RightUpLeg": 0.9,
@@ -154,7 +154,7 @@
                 0.5
             ]
         ],
-        "left_shoulder_yaw_link": [
+        "left_shoulder_roll_link": [
             "LeftArm",
             0,
             [100, 100, 100],
@@ -202,7 +202,7 @@
                 0.0
             ]
         ],
-        "right_shoulder_yaw_link": [
+        "right_shoulder_roll_link": [
             "RightArm",
             0,
             [100, 100, 100],
@@ -380,7 +380,7 @@
                 0.5
             ]
         ],
-        "left_shoulder_yaw_link": [
+        "left_shoulder_roll_link": [
             "LeftArm",
             5,
             [10, 10, 10],
@@ -428,7 +428,7 @@
                 0.0
             ]
         ],
-        "right_shoulder_yaw_link": [
+        "right_shoulder_roll_link": [
             "RightArm",
             5,
             [10, 10, 10],

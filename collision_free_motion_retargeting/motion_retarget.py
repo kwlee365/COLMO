@@ -327,10 +327,11 @@ class CollisionFreeMotionRetargeting:
             ratio = actual_human_height / ik_config["human_height_assumption"]
         else:
             ratio = 1.0
+        self.height_ratio = float(ratio)   # config scale x this = effective scale used downstream
 
         # adjust the human scale table
         for key in ik_config["human_scale_table"].keys():
-            ik_config["human_scale_table"][key] = ik_config["human_scale_table"][key] * ratio
+            ik_config["human_scale_table"][key] = (np.asarray(ik_config["human_scale_table"][key], dtype=float) * ratio)
     
 
         # used for retargeting
@@ -393,6 +394,8 @@ class CollisionFreeMotionRetargeting:
         self.ik_tol = params.get('ik_convergence_tol', 1e-8)   # IK loop early-stop tol
         self.lm_damping = params.get('lm_damping', 1.0)        # per-FrameTask LM damping
         self.motion_fps = params.get('motion_fps', 30)         # foot-contact fps assumption
+        # Optional per-MOTION cap [m/s] on the robot base horizontal speed. When set,
+        self.max_base_horizontal_speed = params.get('max_base_horizontal_speed', None)
         self.ground_offset = params.get('ground_offset', -0.01)  # per-frame robot ground offset [m]
         # Warmup iteration at which the first-frame ground calibration measures the robot's
         # foot float and folds it into ground_offset (see retarget()). The warmup foot pose
@@ -994,7 +997,57 @@ class CollisionFreeMotionRetargeting:
             human_data_global[body_name] = (human_data_local[body_name] + scaled_root_pos, human_data[body_name][1])
 
         return human_data_global
-    
+
+    def adjust_hips_scale_for_motion(self, frames):
+        """Per-MOTION base-speed cap: shrink ONLY the Hips xy scale (z / gait untouched) so this
+        motion's retargeted base peaks at <= self.max_base_horizontal_speed. Motions already
+        under the cap are left unchanged (min()). Call ONCE with the full human frame list before
+        the retarget loop. It ALWAYS prints the motion's max horizontal speed and the resulting
+        base translation scale; it only rescales when the cap is set and would be exceeded.
+
+        human_scale_table[root] holds the EFFECTIVE horizontal scale (config value x height ratio);
+        the robot base h-speed = that scale x raw Hips h-speed, so capping the effective scale at
+        limit / peak_raw caps the base peak at `limit`. A robust p99.5 peak avoids a single glitch
+        frame over-shrinking the whole clip. NOTE: this bounds the SCALED-REFERENCE peak; the
+        actual robot base can overshoot ~1.5x on the hardest frames (base is unconstrained in the
+        IK), so use a lower limit if a hard robot-base cap is required."""
+        if len(frames) < 2:
+            return
+        root = self.human_root_name
+        xy = np.array([np.asarray(frames[t][root][0], float)[:2] for t in range(len(frames))])
+        v = np.linalg.norm(np.diff(xy, axis=0), axis=1) * self.motion_fps   # raw Hips h-speed
+        vmax = float(v.max())
+        peak = float(np.percentile(v, 99.5))              # robust peak used for the cap
+        cur = np.array(self.human_scale_table[root], dtype=float)
+        if cur.ndim == 0:                                 # scalar config -> per-axis (cap xy, keep z)
+            cur = np.array([float(cur)] * 3)
+        old_xy = float(cur[0])
+        limit = self.max_base_horizontal_speed
+        capped = False
+        if limit is not None and float(limit) > 0 and peak > 1e-9:
+            cap_eff = float(limit) / peak                 # max allowed EFFECTIVE xy scale
+            cur[0] = min(float(cur[0]), cap_eff)
+            cur[1] = min(float(cur[1]), cap_eff)
+            self.human_scale_table[root] = cur
+            capped = float(cur[0]) < old_xy - 1e-9
+        # ALWAYS report the motion's max speed and the resulting base-translation scale. The
+        # EFFECTIVE scale = config Hips xy * height_ratio (actual_human_height/assumption), so a
+        # config of 0.70 with LAFAN's 1.75m human shows 0.70*0.972 = 0.6806 -- the config value
+        # and the height ratio are both printed so the number is never surprising.
+        rr = self.height_ratio if self.height_ratio else 1.0
+        base_peak = float(cur[0]) * peak                  # scaled-reference base h-speed peak
+        cfg_nom = old_xy / rr                             # config Hips xy (pre-ratio nominal)
+        if limit is None:
+            tail = "no cap set"
+        elif capped:
+            tail = f"CAPPED (would exceed {limit} m/s) -> base peak {base_peak:.2f} m/s"
+        else:
+            tail = f"under {limit} m/s cap -> faithful (base peak {base_peak:.2f} m/s)"
+        print(f"[COLMO] Motion max horizontal speed = {vmax:.2f} m/s (p99.5 {peak:.2f}) | "
+              f"base xy scale = {float(cur[0]):.4f}  "
+              f"(config {cfg_nom:.3f} x height_ratio {rr:.3f}"
+              f"{f' -> capped {cap_eff:.4f}' if capped else ''})  [{tail}]")
+
     def offset_human_data(self, human_data, pos_offsets, rot_offsets):
         """the pos offsets are applied in the local frame"""
         offset_human_data = {}

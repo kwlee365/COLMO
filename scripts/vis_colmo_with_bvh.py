@@ -144,6 +144,10 @@ if __name__ == "__main__":
         actual_human_height=actual_human_height,
         collision_mode=args.collision_mode,
     )
+    # Per-motion base horizontal-speed cap (collision_cfg max_base_horizontal_speed): shrink the
+    # Hips xy scale for this clip only if its base would exceed the cap. No-op if unset. The
+    # human overlay reads the retargeter's (adjusted) table, so both stay consistent.
+    retargeter.adjust_hips_scale_for_motion(frames)
 
     xml_path = ROBOT_XML_DICT[args.robot]
     robot_base = ROBOT_BASE_DICT[args.robot]
