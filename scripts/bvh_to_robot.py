@@ -176,8 +176,9 @@ if __name__ == "__main__":
         # Update task targets.
         smplx_data = lafan1_data_frames[i]
 
-        # retarget
-        qpos = retargeter.retarget(smplx_data)
+        # retarget (pass the frame index: with --loop the counter would otherwise run past
+        # the end of the per-frame base-speed-capped root trajectory)
+        qpos = retargeter.retarget(smplx_data, frame_idx=i)
         
 
         # visualize

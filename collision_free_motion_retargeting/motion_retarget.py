@@ -31,6 +31,72 @@ def _require_param(params, key):
     return params[key]
 
 
+# How max_base_horizontal_speed is enforced (parameters.base_speed_cap_mode):
+#   "per_frame" : increment-level saturation -- the nominal scale is kept EXACTLY on every
+#                 frame under the cap, and only the frames that would exceed it are
+#                 compressed (they land exactly on the cap). Default.
+#   "clip"      : clip-level scaling -- one scalar shrink applied to the whole motion,
+#                 sized off the p99.5 speed peak. Uniform, but one fast burst shrinks the
+#                 entire clip. Kept for reproducing older runs / visual coherence.
+BASE_SPEED_CAP_MODES = ("per_frame", "clip")
+
+
+def saturate_root_xy(root_xy, nominal_scale_xy, limit, fps):
+    """Increment-level (per-frame) saturation of a root horizontal trajectory.
+
+        d_t   = nominal_scale_xy * (p_t - p_{t-1})        # nominally scaled increment
+        k_t   = min(1, limit / (fps * ||d_t||))           # scalar => direction preserved
+        p'_t  = p'_{t-1} + k_t * d_t,   p'_0 = nominal_scale_xy * p_0
+
+    The resulting base speed is exactly ``min(nominal speed, limit)``: frames below the
+    cap are reproduced at full nominal fidelity and only the offending frames are
+    compressed. For an isotropic nominal scale this is the s_t = min(s_nom, limit/v_t)
+    form; the elementwise product keeps it well-defined if x and y ever differ.
+
+    MUST be integrated on INCREMENTS, not applied to absolute positions: a time-varying
+    factor multiplied into an absolute root position teleports the root whenever the
+    factor changes.
+
+    Args:
+        root_xy: (T, 2) raw human root xy trajectory [m].
+        nominal_scale_xy: scalar or (2,) nominal horizontal scale (already height-ratio'd).
+        limit: base horizontal speed cap [m/s]; None/<=0 disables saturation.
+        fps: frame rate the trajectory is sampled at.
+
+    Returns:
+        (traj, info) with traj (T, 2) the saturated trajectory and info a dict of
+        diagnostics (raw/nominal/capped peak speeds, saturated-frame fraction, path
+        lengths). For T < 2 the trajectory is just the nominally scaled input.
+    """
+    p = np.asarray(root_xy, dtype=float)
+    s_nom = np.broadcast_to(np.asarray(nominal_scale_xy, dtype=float), (2,))
+    if p.shape[0] < 2:
+        return p * s_nom, {}
+
+    d = np.diff(p, axis=0) * s_nom                    # nominally scaled increments
+    v_nom = np.linalg.norm(d, axis=1) * float(fps)    # speed the nominal scale would give
+    if limit is not None and float(limit) > 0:
+        k = np.minimum(1.0, float(limit) / np.maximum(v_nom, 1e-12))
+    else:
+        k = np.ones_like(v_nom)
+
+    traj = np.empty_like(p)
+    traj[0] = p[0] * s_nom
+    traj[1:] = traj[0] + np.cumsum(d * k[:, None], axis=0)
+
+    v_raw = np.linalg.norm(np.diff(p, axis=0), axis=1) * float(fps)
+    info = dict(
+        v_raw_max=float(v_raw.max()),
+        v_raw_p995=float(np.percentile(v_raw, 99.5)),
+        v_nom_max=float(v_nom.max()),
+        base_peak=float((v_nom * k).max()),
+        saturated_frac=float((k < 1.0 - 1e-12).mean()),
+        path_len=float(np.linalg.norm(d * k[:, None], axis=1).sum()),
+        path_len_nominal=float(np.linalg.norm(d, axis=1).sum()),
+    )
+    return traj, info
+
+
 class ISSfCollisionAvoidanceLimit(mink.CollisionAvoidanceLimit):
     """
     ISSf-CBF variant of mink's collision avoidance limit.
@@ -394,8 +460,24 @@ class CollisionFreeMotionRetargeting:
         self.ik_tol = params.get('ik_convergence_tol', 1e-8)   # IK loop early-stop tol
         self.lm_damping = params.get('lm_damping', 1.0)        # per-FrameTask LM damping
         self.motion_fps = params.get('motion_fps', 30)         # foot-contact fps assumption
-        # Optional per-MOTION cap [m/s] on the robot base horizontal speed. When set,
+        # Optional cap [m/s] on the robot base horizontal speed, enforced by
+        # adjust_hips_scale_for_motion() before the retarget loop. See BASE_SPEED_CAP_MODES
+        # for how base_speed_cap_mode chooses between increment-level saturation (default)
+        # and the older clip-level scaling.
         self.max_base_horizontal_speed = params.get('max_base_horizontal_speed', None)
+        self.base_speed_cap_mode = str(params.get('base_speed_cap_mode', 'per_frame')).lower()
+        if self.base_speed_cap_mode not in BASE_SPEED_CAP_MODES:
+            raise ValueError(
+                f"collision_cfg.yaml parameters.base_speed_cap_mode must be one of "
+                f"{BASE_SPEED_CAP_MODES}, got '{self.base_speed_cap_mode}'."
+            )
+        # Precomputed saturated root xy trajectory for "per_frame" mode, indexed by the
+        # frame counter maintained in retarget(). None -> scale_human_data falls back to
+        # the plain scalar root scaling (also the path taken by "clip" mode and by any
+        # caller that never runs adjust_hips_scale_for_motion).
+        self._root_xy_traj = None
+        self._frame_idx = 0        # index of the frame currently being retargeted
+        self._auto_frame_idx = 0   # running counter used when retarget() gets no frame_idx
         self.ground_offset = params.get('ground_offset', -0.01)  # per-frame robot ground offset [m]
         # Warmup iteration at which the first-frame ground calibration measures the robot's
         # foot float and folds it into ground_offset (see retarget()). The warmup foot pose
@@ -867,7 +949,19 @@ class CollisionFreeMotionRetargeting:
                 num_iter += 1
             self.log_collision_warning("Table2", num_iter)
 
-    def retarget(self, human_data):
+    def retarget(self, human_data, frame_idx=None):
+        """Retarget ONE human frame to a robot qpos.
+
+        frame_idx indexes `human_data` within the motion passed to
+        adjust_hips_scale_for_motion(); it selects this frame's entry in the "per_frame"
+        base-speed-capped root trajectory. Leave it None for sequential playback and an
+        internal counter advances on its own (it is reset by adjust_hips_scale_for_motion);
+        pass it explicitly when frames are visited out of order or replayed, e.g. a looping
+        or scrubbing viewer. Ignored when no base-speed cap trajectory is active.
+        """
+        self._frame_idx = self._auto_frame_idx if frame_idx is None else int(frame_idx)
+        self._auto_frame_idx = self._frame_idx + 1
+
         self.update_targets(human_data)
         dt = self.configuration.model.opt.timestep
 
@@ -980,7 +1074,14 @@ class CollisionFreeMotionRetargeting:
         
         # scale root
         scaled_root_pos = human_scale_table[human_root_name] * root_pos
-        
+        if self._root_xy_traj is not None:
+            # "per_frame" base-speed cap: the horizontal root comes from the pre-integrated
+            # saturated trajectory (adjust_hips_scale_for_motion) instead of a scalar multiply.
+            # z keeps the plain scaling so height / gait bob are untouched. The modulo keeps
+            # looping viewers (bvh_to_robot.py --loop) in range.
+            scaled_root_pos = np.asarray(scaled_root_pos, dtype=float).copy()
+            scaled_root_pos[:2] = self._root_xy_traj[self._frame_idx % len(self._root_xy_traj)]
+
         # scale other body parts in local frame
         for body_name in human_data.keys():
             if body_name not in human_scale_table:
@@ -999,44 +1100,73 @@ class CollisionFreeMotionRetargeting:
         return human_data_global
 
     def adjust_hips_scale_for_motion(self, frames):
-        """Per-MOTION base-speed cap: shrink ONLY the Hips xy scale (z / gait untouched) so this
-        motion's retargeted base peaks at <= self.max_base_horizontal_speed. Motions already
-        under the cap are left unchanged (min()). Call ONCE with the full human frame list before
-        the retarget loop. It ALWAYS prints the motion's max horizontal speed and the resulting
-        base translation scale; it only rescales when the cap is set and would be exceeded.
+        """Apply the base horizontal-speed cap (max_base_horizontal_speed) to ONE motion.
+        Call ONCE with the full human frame list before the retarget loop; it also resets the
+        internal frame counter, so it doubles as the "new motion starts here" marker. Only the
+        Hips HORIZONTAL motion is ever touched -- z, gait and every limb scale are untouched.
 
-        human_scale_table[root] holds the EFFECTIVE horizontal scale (config value x height ratio);
-        the robot base h-speed = that scale x raw Hips h-speed, so capping the effective scale at
-        limit / peak_raw caps the base peak at `limit`. A robust p99.5 peak avoids a single glitch
-        frame over-shrinking the whole clip. NOTE: this bounds the SCALED-REFERENCE peak; the
-        actual robot base can overshoot ~1.5x on the hardest frames (base is unconstrained in the
-        IK), so use a lower limit if a hard robot-base cap is required."""
+        Two modes (parameters.base_speed_cap_mode, see BASE_SPEED_CAP_MODES):
+
+        "per_frame" (default) -- increment-level saturation. Precomputes the saturated root xy
+            trajectory via saturate_root_xy(): every frame under the cap keeps the nominal scale
+            EXACTLY, and only the offending frames are compressed, landing exactly on the cap.
+            A clip that never exceeds the cap reproduces the uncapped result to roundoff (~1e-14,
+            the cumulative sum vs. a direct multiply).
+
+        "clip" -- the older clip-level scaling: one scalar shrink min(nominal, limit/peak_p99.5)
+            baked into human_scale_table[root] for the whole motion. Uniform (so a clip keeps a
+            single consistent apparent body size) but one fast burst shrinks every frame, and the
+            p99.5 peak means the top 0.5% of frames still exceed the cap.
+
+        NOTE (both modes): this bounds the SCALED-REFERENCE base speed. The robot base is
+        unconstrained in the IK, so the actual base can still overshoot ~1.5x on the hardest
+        frames -- use a lower limit if a hard robot-base cap is required."""
+        self._root_xy_traj = None
+        self._frame_idx = 0
+        self._auto_frame_idx = 0
         if len(frames) < 2:
             return
         root = self.human_root_name
         xy = np.array([np.asarray(frames[t][root][0], float)[:2] for t in range(len(frames))])
+        limit = self.max_base_horizontal_speed
+        # EFFECTIVE scale = config Hips xy * height_ratio (actual_human_height/assumption), so a
+        # config of 0.70 with LAFAN's 1.75m human gives 0.70*0.972 = 0.6806. Both the config
+        # value and the ratio are printed below so the number is never surprising.
+        rr = self.height_ratio if self.height_ratio else 1.0
+        cur = np.array(self.human_scale_table[root], dtype=float)
+        if cur.ndim == 0:                                 # scalar config -> per-axis (xy vs z)
+            cur = np.array([float(cur)] * 3)
+        nom_xy = float(cur[0])
+        cfg_nom = nom_xy / rr                             # config Hips xy (pre-ratio nominal)
+
+        if self.base_speed_cap_mode == "per_frame":
+            self._root_xy_traj, info = saturate_root_xy(xy, cur[:2], limit, self.motion_fps)
+            if limit is None:
+                tail = "no cap set"
+            elif info["saturated_frac"] > 0:
+                shrink = info["path_len"] / max(info["path_len_nominal"], 1e-9)
+                tail = (f"saturated {100 * info['saturated_frac']:.1f}% of frames at {limit} m/s "
+                        f"-> travel {100 * shrink:.0f}% of nominal")
+            else:
+                tail = f"under {limit} m/s cap -> fully faithful"
+            print(f"[COLMO] Motion max horizontal speed = {info['v_raw_max']:.2f} m/s "
+                  f"(p99.5 {info['v_raw_p995']:.2f}) | per-frame cap, base xy scale = "
+                  f"{nom_xy:.4f} nominal (config {cfg_nom:.3f} x height_ratio {rr:.3f}) | "
+                  f"base peak {info['base_peak']:.2f} m/s  [{tail}]")
+            return
+
+        # --- "clip" mode: one scalar shrink for the whole motion -------------------------
         v = np.linalg.norm(np.diff(xy, axis=0), axis=1) * self.motion_fps   # raw Hips h-speed
         vmax = float(v.max())
         peak = float(np.percentile(v, 99.5))              # robust peak used for the cap
-        cur = np.array(self.human_scale_table[root], dtype=float)
-        if cur.ndim == 0:                                 # scalar config -> per-axis (cap xy, keep z)
-            cur = np.array([float(cur)] * 3)
-        old_xy = float(cur[0])
-        limit = self.max_base_horizontal_speed
         capped = False
         if limit is not None and float(limit) > 0 and peak > 1e-9:
             cap_eff = float(limit) / peak                 # max allowed EFFECTIVE xy scale
             cur[0] = min(float(cur[0]), cap_eff)
             cur[1] = min(float(cur[1]), cap_eff)
             self.human_scale_table[root] = cur
-            capped = float(cur[0]) < old_xy - 1e-9
-        # ALWAYS report the motion's max speed and the resulting base-translation scale. The
-        # EFFECTIVE scale = config Hips xy * height_ratio (actual_human_height/assumption), so a
-        # config of 0.70 with LAFAN's 1.75m human shows 0.70*0.972 = 0.6806 -- the config value
-        # and the height ratio are both printed so the number is never surprising.
-        rr = self.height_ratio if self.height_ratio else 1.0
+            capped = float(cur[0]) < nom_xy - 1e-9
         base_peak = float(cur[0]) * peak                  # scaled-reference base h-speed peak
-        cfg_nom = old_xy / rr                             # config Hips xy (pre-ratio nominal)
         if limit is None:
             tail = "no cap set"
         elif capped:
@@ -1044,9 +1174,18 @@ class CollisionFreeMotionRetargeting:
         else:
             tail = f"under {limit} m/s cap -> faithful (base peak {base_peak:.2f} m/s)"
         print(f"[COLMO] Motion max horizontal speed = {vmax:.2f} m/s (p99.5 {peak:.2f}) | "
-              f"base xy scale = {float(cur[0]):.4f}  "
+              f"clip cap, base xy scale = {float(cur[0]):.4f}  "
               f"(config {cfg_nom:.3f} x height_ratio {rr:.3f}"
               f"{f' -> capped {cap_eff:.4f}' if capped else ''})  [{tail}]")
+
+    def capped_root_xy(self, frame_idx):
+        """Saturated (base-speed-capped) root xy for `frame_idx`, or None when no per-frame
+        cap trajectory is active ("clip" mode, no cap, or adjust_hips_scale_for_motion never
+        ran). Viewers that draw the human skeleton themselves should use this to place the
+        root instead of scaling the raw position, so the overlay travels with the robot."""
+        if self._root_xy_traj is None:
+            return None
+        return self._root_xy_traj[int(frame_idx) % len(self._root_xy_traj)]
 
     def offset_human_data(self, human_data, pos_offsets, rot_offsets):
         """the pos offsets are applied in the local frame"""

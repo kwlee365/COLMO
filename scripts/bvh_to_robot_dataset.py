@@ -73,7 +73,7 @@ def process_one_bvh(
     )
 
     for i, smplx_data in frame_pbar:
-        qpos = retarget.retarget(smplx_data)
+        qpos = retarget.retarget(smplx_data, frame_idx=i)
         qpos_list.append(qpos.copy())
 
         elapsed = time.time() - t0

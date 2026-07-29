@@ -10,7 +10,8 @@ parameters:
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
   ground_offset : 0.0    # per-frame robot ground offset [m] (apply_ground_offset)
-  
+  max_base_horizontal_speed : 1.0
+  base_speed_cap_mode : per_frame
   
   ground_calib_warmup_iter : 200
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".

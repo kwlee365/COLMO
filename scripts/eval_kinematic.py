@@ -11,7 +11,8 @@ against these mesh-level kinematic quality metrics (all LOWER = better):
   6. Mean foot slide distance             Slide_dist   (paper detect_foot_sliding)
   7. Mean foot floating distance          Foot_float
   8. Joint velocity violation frame frac. P_vel
-  9. Shoulder roll saturation fraction    P_sat
+  9. Shoulder roll saturation fraction    P_sat      (roll joints within eta of a limit)
+ 10. Shoulder yaw  saturation fraction    P_sat_yaw  (yaw  joints within eta of a limit)
 
 Key modelling choices (documented so the numbers are reproducible):
 
@@ -152,10 +153,12 @@ def robot_metadata(robot):
 
     vmax = np.array([vlim_map[n] for n in dof_names], dtype=np.float64)
 
-    # Joint ranges (for shoulder saturation) and the shoulder-roll dof indices.
+    # Joint ranges (for shoulder saturation) and the shoulder-roll / shoulder-yaw dof indices.
     jnt_range = np.array([model.jnt_range[model.joint(n).id] for n in dof_names])
     shoulder_roll_idx = [i for i, n in enumerate(dof_names)
                          if "shoulder_roll" in n]
+    shoulder_yaw_idx = [i for i, n in enumerate(dof_names)
+                        if "shoulder_yaw" in n]
 
     # Toe bodies for foot sliding (fall back to ankle_roll if no toe link).
     def body_id(cands):
@@ -230,6 +233,7 @@ def robot_metadata(robot):
                 mesh_geom_ids=mesh_geom_ids, geom_verts=geom_verts,
                 dof_names=dof_names, n_dof=n_dof, vmax=vmax,
                 jnt_range=jnt_range, shoulder_roll_idx=shoulder_roll_idx,
+                shoulder_yaw_idx=shoulder_yaw_idx,
                 toe_bid=toe_bid, foot_geoms=foot_geoms,
                 hand_mesh_skip=hand_mesh_skip, hand_pen_geoms=hand_pen_geoms,
                 floor_z=floor_z, urdf_name=urdf_name)
@@ -496,21 +500,25 @@ def evaluate_motion(data_dict, bvh_frames, meta, structural, args, mirrored=Fals
     viol = (np.abs(qdot) > vlim).any(axis=1)
     P_vel = float(viol.mean()) if viol.size else np.nan
 
-    # 7) shoulder roll saturation fraction (eta band of joint range, both sides)
+    # 7) shoulder roll & yaw saturation fraction (fraction of frames a shoulder-roll / -yaw
+    # joint sits within an eta band of either joint limit; averaged over both sides & frames).
     eta = args.eta
-    sr = meta["shoulder_roll_idx"]
-    sat_frac = np.nan
-    if sr:
-        lo = meta["jnt_range"][sr, 0]
-        hi = meta["jnt_range"][sr, 1]
+
+    def _sat_frac(idx):
+        if not idx:
+            return np.nan
+        lo = meta["jnt_range"][idx, 0]
+        hi = meta["jnt_range"][idx, 1]
         delta = eta * (hi - lo)
-        q_sr = dof[:, sr]                                             # (N, n_sr)
-        sat = (q_sr <= lo + delta) | (q_sr >= hi - delta)
-        sat_frac = float(sat.mean())                                 # averages over joints & frames
+        q = dof[:, idx]                                              # (N, n_idx)
+        return float(((q <= lo + delta) | (q >= hi - delta)).mean())
+
+    sat_frac = _sat_frac(meta["shoulder_roll_idx"])
+    sat_frac_yaw = _sat_frac(meta["shoulder_yaw_idx"])
 
     return dict(N=N, P_ground=P_ground, D_ground=D_ground, Foot_float=Foot_float,
                 P_self=P_self, D_self=D_self, Slide_dur=Slide_dur, Slide_dist=Slide_dist,
-                P_vel=P_vel, P_sat=sat_frac)
+                P_vel=P_vel, P_sat=sat_frac, P_sat_yaw=sat_frac_yaw)
 
 
 # --------------------------------------------------------------------------- #
@@ -612,7 +620,8 @@ def main():
     # BVH (source human) contact frames are shared by all sources of a motion.
     per_rows = []          # (motion, algo, metrics...)
     agg = {k: {m: [] for m in ("P_ground", "D_ground", "Foot_float", "P_self", "D_self",
-                               "Slide_dur", "Slide_dist", "P_vel", "P_sat")} for k in args.algos}
+                               "Slide_dur", "Slide_dist", "P_vel", "P_sat", "P_sat_yaw")}
+           for k in args.algos}
     _dof_warned = set()    # sources skipped for a model/data dof mismatch (warn once each)
 
     for motion in tqdm(motions, desc="motions"):
@@ -676,7 +685,8 @@ def main():
         ("Slide_dist", "Foot slide cm/s",      100, 3),
         ("Foot_float", "Foot floating cm",     100, 3),
         ("P_vel",      "Vel violation %",      100, 2),
-        ("P_sat",      "Shoulder sat %",       100, 2),
+        ("P_sat",      "Shoulder-roll sat %",  100, 2),
+        ("P_sat_yaw",  "Shoulder-yaw sat %",   100, 2),
     ]
     _known = ("gmr", "omniretarget", "unitree", "colmo")
     order = ([k for k in _known if k in args.algos]
@@ -703,12 +713,13 @@ def main():
             w = csv.writer(f)
             w.writerow(["motion", "source", "frames", "P_ground", "D_ground_m",
                         "FootFloat_m", "P_self", "D_self_m", "SlideDur", "SlideDist_m",
-                        "P_vel", "P_sat"])
+                        "P_vel", "P_sat_roll", "P_sat_yaw"])
             for motion, key, r in per_rows:
                 w.writerow([motion, ALGO_TABLE[key]["label"], r["N"],
                             r["P_ground"], r["D_ground"], r["Foot_float"],
                             r["P_self"], r["D_self"],
-                            r["Slide_dur"], r["Slide_dist"], r["P_vel"], r["P_sat"]])
+                            r["Slide_dur"], r["Slide_dist"], r["P_vel"],
+                            r["P_sat"], r["P_sat_yaw"]])
         print(f"[eval] per-motion metrics -> {out}")
 
 

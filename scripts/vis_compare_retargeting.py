@@ -39,7 +39,7 @@ from rich import print
 from tqdm import tqdm
 
 from collision_free_motion_retargeting import (
-    ROBOT_XML_DICT, ROBOT_BASE_DICT, IK_CONFIG_DICT)
+    ROBOT_XML_DICT, ROBOT_BASE_DICT, IK_CONFIG_DICT, saturate_root_xy)
 from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file
 from collision_free_motion_retargeting.utils.lafan_vendor.extract import read_bvh
 
@@ -586,33 +586,43 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             base_scale = {k: np.asarray(v, dtype=float) * ratio
                           for k, v in ik_config["human_scale_table"].items()}
             h_root = ik_config["human_root_name"]
-            # Match COLMO's per-motion base-speed cap on the drawn skeleton: shrink the root
-            # (Hips) xy scale exactly like adjust_hips_scale_for_motion (min(scale, limit/peak99.5)),
-            # so the human overlay travels at the same (capped) speed as the COLMO robot. Reads
-            # max_base_horizontal_speed from the --robot's collision_cfg; no-op if unset.
+            # Match COLMO's base-speed cap on the drawn skeleton so the human overlay travels
+            # at the same (capped) speed as the COLMO robot. Reads max_base_horizontal_speed
+            # and base_speed_cap_mode from the --robot's collision_cfg; no-op if unset.
+            #   per_frame -> precompute the saturated root xy trajectory with the SAME helper
+            #                the retargeter uses (root_xy_traj, looked up per frame below).
+            #   clip      -> shrink the root xy scale once, as adjust_hips_scale_for_motion does.
+            root_xy_traj = None
             try:
                 import yaml
                 _pp = yaml.safe_load(
                     open(ROBOT_XML_DICT[args.robot].parent / "collision_cfg.yaml"))["parameters"]
                 _limit = _pp.get("max_base_horizontal_speed")
                 _fps = float(_pp.get("motion_fps", 30))
+                _mode = str(_pp.get("base_speed_cap_mode", "per_frame")).lower()
             except Exception:
-                _limit, _fps = None, 30.0
+                _limit, _fps, _mode = None, 30.0, "per_frame"
             if _limit and float(_limit) > 0 and h_root in base_scale and len(frames) > 1:
                 _rxy = np.array([np.asarray(frames[t][h_root][0], float)[:2]
                                  for t in range(len(frames))])
-                _v = np.linalg.norm(np.diff(_rxy, axis=0), axis=1) * _fps
-                _peak = float(np.percentile(_v, 99.5))
-                if _peak > 1e-9:
-                    _cap = float(_limit) / _peak
-                    _s = np.array(base_scale[h_root], dtype=float)
-                    if _s.ndim == 0:
-                        _s = np.array([float(_s)] * 3)
-                    _s[0] = min(float(_s[0]), _cap)
-                    _s[1] = min(float(_s[1]), _cap)
-                    base_scale[h_root] = _s
-                    print(f"[skeleton] base-speed cap {_limit} m/s -> Hips xy scale "
-                          f"{float(_s[0]):.4f} (peak {_peak:.2f} m/s)")
+                _s = np.array(base_scale[h_root], dtype=float)
+                if _s.ndim == 0:
+                    _s = np.array([float(_s)] * 3)
+                if _mode == "per_frame":
+                    root_xy_traj, _info = saturate_root_xy(_rxy, _s[:2], _limit, _fps)
+                    print(f"[skeleton] base-speed cap {_limit} m/s (per_frame) -> saturated "
+                          f"{100 * _info['saturated_frac']:.1f}% of frames, base peak "
+                          f"{_info['base_peak']:.2f} m/s")
+                else:
+                    _peak = float(np.percentile(
+                        np.linalg.norm(np.diff(_rxy, axis=0), axis=1) * _fps, 99.5))
+                    if _peak > 1e-9:
+                        _cap = float(_limit) / _peak
+                        _s[0] = min(float(_s[0]), _cap)
+                        _s[1] = min(float(_s[1]), _cap)
+                        base_scale[h_root] = _s
+                        print(f"[skeleton] base-speed cap {_limit} m/s (clip) -> Hips xy scale "
+                              f"{float(_s[0]):.4f} (peak {_peak:.2f} m/s)")
             eff_scale = build_effective_scale(bones, parents, base_scale)
 
             # Frame-0 facing from the hip line (convention-independent, so it
@@ -632,7 +642,7 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             human = dict(frames=frames, bones=bones, edges=edges, parents=parents,
                          n=len(frames), height=height,
                          eff_scale=eff_scale, h_root=h_root,
-                         pivot=pivot, Rz=Rz_human,
+                         pivot=pivot, Rz=Rz_human, root_xy_traj=root_xy_traj,
                          # Retarget keybodies = the IK config's human_scale_table keys
                          # (used by --keypoints_from_config). May include computed bodies
                          # like LeftFootMod that are present in the frames but not raw bones.
@@ -814,7 +824,13 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             eff_scale = human["eff_scale"]
             pivot, Rz = human["pivot"], human["Rz"]
             raw_root = np.asarray(frame[h_root][0], dtype=np.float64)
-            scaled_root = eff_scale.get(h_root, 1.0) * raw_root
+            scaled_root = np.asarray(eff_scale.get(h_root, 1.0) * raw_root, dtype=np.float64)
+            # "per_frame" base-speed cap: the horizontal root is the pre-integrated saturated
+            # trajectory, not a scalar multiply (see saturate_root_xy). None in "clip" mode,
+            # where the shrink is already baked into eff_scale.
+            if human["root_xy_traj"] is not None:
+                scaled_root = scaled_root.copy()
+                scaled_root[:2] = human["root_xy_traj"][min(cur_i, human["n"] - 1)]
 
             def rp(bone):
                 # Scale about the root (vis_colmo_with_bvh convention), then rotate
