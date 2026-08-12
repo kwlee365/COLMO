@@ -57,6 +57,7 @@ assets/body_models/
 *.tar.gz
 *.rar
 *.7z
+*.png
 
 # Model files
 smplx/

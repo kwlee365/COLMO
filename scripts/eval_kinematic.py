@@ -26,12 +26,22 @@ Key modelling choices (documented so the numbers are reproducible):
   (z=0), avoiding convex-hull inflation. SELF penetration uses MuJoCo's convex
   mesh-mesh contacts (penetration depth = -contact.dist).
 
-* STRUCTURAL self-overlaps: some non-adjacent link meshes overlap even at the
-  neutral pose (e.g. knee<->ankle_roll, waist_yaw<->torso) because MuJoCo
-  collides the meshes' convex hulls. Those body pairs are modelling artifacts,
-  not real self-collisions, so they are auto-detected at the neutral pose and
-  excluded from the self-penetration metric for ALL frames and ALL sources.
+* WHICH PAIRS COUNT as a self-collision. MuJoCo collides the meshes' CONVEX HULLS,
+  so links that are structurally close overlap at every pose and must not be
+  scored. Two exclusions handle that, both pose-INDEPENDENT:
+    - pairs inside one limb group: left arm / right arm / left leg / right leg /
+      torso+head. A chain overlapping itself is not a self-collision. The pelvis
+      belongs to torso AND both legs, since it is rigidly adjacent to the waist
+      and to both hips.
+    - pairs at most --adjacent_hops joints apart on the kinematic tree (cover
+      links collapsed onto the link they are bolted to). This is what suppresses
+      the arm-root-vs-torso overlap, which crosses a group boundary.
+  Everything else IS scored -- in particular arm<->torso and arm<->pelvis, i.e. a
+  hand driven into the body, which is the most common retargeting failure.
   MuJoCo's parent-child filtering (filterparent) is left ON.
+  NOTE: an earlier version instead excluded whatever overlapped at the NEUTRAL
+  pose. That silently exempted real collisions (on kapex: wrist<->pelvis,
+  elbow<->pelvis, because dof=0 hangs the arms against the body) and is gone.
 
 * Foot CONTACT (stance) is detected from the shared SOURCE human motion (BVH
   LeftFoot+LeftToe / RightFoot+RightToe) via the LAFAN1 article's own detector
@@ -57,6 +67,9 @@ import pickle
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import yaml
+
+import fcl
 import numpy as np
 import mujoco as mj
 from tqdm import tqdm
@@ -68,9 +81,10 @@ from collision_free_motion_retargeting.utils.lafan_vendor import utils as lafan_
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Per-source pkl location and filename suffix (mirrors vis_compare_retargeting).
+# OmniRetarget exports every motion as '<motion>_original.pkl'.
 ALGO_TABLE = {
     "gmr":          dict(subdir="gmr",          suffix="",          label="GMR"),
-    "omniretarget": dict(subdir="omniretarget", suffix="", label="OmniRetarget"),
+    "omniretarget": dict(subdir="omniretarget", suffix="_original", label="OmniRetarget"),
     "colmo":        dict(subdir="colmo",        suffix="",          label="COLMO"),
     "unitree":      dict(subdir="unitree",      suffix="",          label="Unitree LAFAN1"),
 }
@@ -239,71 +253,92 @@ def robot_metadata(robot):
                 floor_z=floor_z, urdf_name=urdf_name)
 
 
-def structural_self_pairs(meta):
-    """Body-pairs that overlap at the NEUTRAL pose (dof=0) -> modelling artifacts
-    to exclude from the self-penetration metric. Returns a set of frozenset pairs."""
-    model, data = meta["model"], meta["data"]
-    q = np.zeros(model.nq)
-    q[3] = 1.0            # identity quaternion (wxyz)
-    q[2] = 1.0            # lift off the floor so only self-contacts appear
-    data.qpos[:] = q
-    mj.mj_kinematics(model, data)
-    mj.mj_collision(model, data)
+# Limb-group membership by body name. A "_cover" body follows its base link automatically
+# (left_shoulder_roll_link_cover still matches "left" + "shoulder"). Verified to partition
+# every body of kapex/kapex_lite (63) and unitree_g1 (38) with nothing left over.
+_ARM_KEYS = ("shoulder", "elbow", "wrist", "hand")
+_LEG_KEYS = ("hip", "knee", "ankle", "toe", "foot")
+
+
+def body_groups(name):
+    """Set of limb groups a body belongs to: 'Larm','Rarm','Lleg','Rleg','torso'.
+
+    Membership is a SET because the pelvis is rigidly adjacent to BOTH the waist and the two
+    hips, so it joins 'torso', 'Lleg' and 'Rleg' at once. A pair is excluded when the two
+    bodies SHARE a group, so pelvis<->waist and pelvis<->hip (permanent hull overlaps) drop
+    out while pelvis<->hand -- a real collision -- is still scored.
+    """
+    n = name or ""
+    side = "L" if n.startswith("left") else ("R" if n.startswith("right") else None)
+    if side and any(k in n for k in _ARM_KEYS):
+        return frozenset({side + "arm"})
+    if side and any(k in n for k in _LEG_KEYS):
+        return frozenset({side + "leg"})
+    if "pelvis" in n:
+        return frozenset({"torso", "Lleg", "Rleg"})
+    return frozenset({"torso"})
+
+
+def body_group_pairs(meta):
+    """Body-name pairs INSIDE one limb group -- a chain overlapping itself is not a
+    self-collision. Replaces the old ancestor/descendant test, which was unusable on a
+    humanoid: the pelvis is the kinematic root, so EVERY link is its descendant and every
+    limb-vs-torso pair was excluded, hiding the most common retargeting failure (a hand
+    driven into the torso). Measured on kapex_lite that test dropped 108 of the 180
+    arm-vs-torso pairs and all 105 torso-internal ones.
+
+    Group-to-group pairs are all KEPT: arm<->torso, arm<->pelvis, arm<->arm, arm<->leg,
+    leg<->leg."""
+    model = meta["model"]
+    names = [mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, b) for b in range(1, model.nbody)]
+    groups = {n: body_groups(n) for n in names}
     pairs = set()
-    for i in range(data.ncon):
-        c = data.contact[i]
-        if -c.dist <= 0:
-            continue
-        b1 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom1])
-        b2 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom2])
-        pairs.add(frozenset((b1, b2)))
+    for i, n1 in enumerate(names):
+        for n2 in names[i + 1:]:
+            if groups[n1] & groups[n2]:
+                pairs.add(frozenset((n1, n2)))
     return pairs
 
 
-def _weld_ancestors(model, b):
-    """Weld-body ids on the path from body b's WELD body up to (and including) the world
-    root. Jointless bodies are collapsed onto their weld parent (model.body_weldid), so a
-    cosmetic cover rigidly fixed to link X (e.g. pelvis_link_cover_1 welded to pelvis, which
-    has no joint of its own) is treated as X itself. Without this collapse the cover hangs off
-    the raw body tree as its OWN sibling branch, so an ancestor/descendant test misses that it
-    is really part of X's serial chain -- letting the cover's inflated convex hull register a
-    spurious "cross-chain" self-collision against X's own neighbours (e.g.
-    pelvis_link_cover_1<->waist_yaw_link, a fixed pelvis-waist overlap that dominates the
-    kapex self-penetration metric)."""
-    chain = set()
-    w = int(model.body_weldid[b])
-    while True:
-        chain.add(w)
-        pw = int(model.body_weldid[model.body_parentid[w]])
-        if pw == w:                      # world (weld id 0) is its own weld parent
-            break
-        w = pw
-    return chain
+def adjacent_link_pairs(meta, max_hops=1):
+    """Body-name pairs at most `max_hops` JOINTS apart on the weld-collapsed tree.
 
+    Links joined by one joint (and, at max_hops=2, by two) are rigidly close and their
+    convex hulls overlap at every pose, so they are modelling artifacts rather than
+    self-collisions. This is what suppresses the shoulder-vs-torso overlap that survives the
+    group test, since the arm root attaches to the torso across a group boundary.
 
-def same_chain_pairs(meta):
-    """Body-name pairs where one body is an ANCESTOR of the other on the kinematic tree
-    (i.e. on the same serial chain). A link overlapping the convex hull of its own
-    ancestor/descendant is a structural false positive, so such pairs are excluded from the
-    self-penetration metric (cf. ReactOR: "collisions within same kinematic chain ignored").
-    This subsumes the parent-child cases filterparent already drops, plus the deeper
-    same-limb overlaps (foot<->hip, upper-arm<->torso, thigh<->pelvis). Cross-chain
-    collisions (hand<->hand, hand<->opposite leg, arm<->same-side leg) are KEPT.
-
-    Bodies are compared by their WELD body (see _weld_ancestors): a zero-joint cover link is
-    collapsed onto the link it is bolted to before the ancestor test, so a cover inherits its
-    parent link's same-chain exclusions instead of leaking through as a separate branch.
-    Robots without cover/welded bodies (G1, H1) are unaffected -- there weld id == body id, so
-    this reduces exactly to the raw-body ancestor test."""
+    Cover bodies (no joint of their own) are collapsed onto the link they are bolted to, so a
+    cover inherits its parent link's adjacency.
+    """
     model = meta["model"]
-    wanc = {b: _weld_ancestors(model, b) for b in range(model.nbody)}
+    W = lambda b: int(model.body_weldid[b])
+    adj = {}
+    for b in range(1, model.nbody):
+        w, pw = W(b), W(int(model.body_parentid[b]))
+        if w != pw:
+            adj.setdefault(w, set()).add(pw)
+            adj.setdefault(pw, set()).add(w)
+    # BFS out to max_hops from every weld body
+    near = {}
+    for src in adj:
+        seen, frontier = {src}, [src]
+        for _ in range(max_hops):
+            nxt = []
+            for x in frontier:
+                for y in adj.get(x, ()):
+                    if y not in seen:
+                        seen.add(y)
+                        nxt.append(y)
+            frontier = nxt
+        near[src] = seen
     pairs = set()
-    for b1 in range(1, model.nbody):                       # skip world
-        w1 = int(model.body_weldid[b1])
+    for b1 in range(1, model.nbody):
         n1 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, b1)
+        w1 = W(b1)
         for b2 in range(b1 + 1, model.nbody):
-            # one weld body is an ancestor of the other (welds collapsed)
-            if w1 in wanc[b2] or int(model.body_weldid[b2]) in wanc[b1]:
+            w2 = W(b2)
+            if w1 == w2 or w2 in near.get(w1, ()):
                 n2 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, b2)
                 pairs.add(frozenset((n1, n2)))
     return pairs
@@ -337,22 +372,97 @@ def ground_penetration_depth(meta):
     return max(0.0, meta["floor_z"] - min_z)
 
 
-def self_penetration_depth(meta, structural):
-    """Max convex mesh-mesh penetration depth (m, >=0) among non-structural,
-    non-parent-child link pairs this frame (0 if none)."""
+def build_self_collision_pairs(meta, ignore_pairs):
+    """Candidate (geom_a, geom_b) MESH pairs for the self-penetration metric.
+
+    Drops pairs on the same body and pairs whose BODY pair is in `ignore_pairs` (same limb
+    group, or within --adjacent_hops joints)."""
+    model = meta["model"]
+    # Keep robot_metadata's HAND substitution: the fine finger mesh is replaced by the coarse
+    # Hand1 collision SPHERE. That substitution is expressed via contype/conaffinity, which
+    # neither mj_geomDistance nor FCL consults, so it has to be applied to the geom list here
+    # or it would silently stop taking effect.
+    G = [g for g in meta["mesh_geom_ids"] if g not in meta["hand_mesh_skip"]]
+    G += [g for g, _ in meta["hand_pen_geoms"]]
+    name = {}
+    for g in G:
+        name[g] = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g]))
+    out = []
+    for i, a in enumerate(G):
+        for b in G[i + 1:]:
+            if model.geom_bodyid[a] == model.geom_bodyid[b]:
+                continue
+            if frozenset((name[a], name[b])) in ignore_pairs:
+                continue
+            out.append((a, b))
+    return out
+
+
+def build_fcl_objects(meta):
+    """geom id -> fcl.CollisionObject wrapping the geom's REAL triangle mesh (BVH).
+
+    FCL collides the actual triangles, so unlike MuJoCo it is not fooled by convex-hull
+    inflation, and its BVH works on open ("triangle soup") meshes -- which matters here
+    because most of these link meshes are not watertight (kapex: 2 of 61).
+
+    Hands keep robot_metadata's coarse Hand1 SPHERE instead of the finger mesh, matching the
+    existing ground-penetration and mj_collision behaviour."""
+    model = meta["model"]
+    objs = {}
+    # Hand collision SPHERES (robot_metadata's coarse stand-in for the finger mesh) are
+    # primitives, not meshes -- FCL collides a Sphere against a BVH directly.
+    for g, radius in meta["hand_pen_geoms"]:
+        objs[g] = fcl.CollisionObject(fcl.Sphere(float(radius)), fcl.Transform())
+    for g in meta["mesh_geom_ids"]:
+        if g in meta["hand_mesh_skip"]:
+            continue
+        mid = int(model.geom_dataid[g])
+        va, nv = int(model.mesh_vertadr[mid]), int(model.mesh_vertnum[mid])
+        fa, nf = int(model.mesh_faceadr[mid]), int(model.mesh_facenum[mid])
+        V = model.mesh_vert[va:va + nv].astype(np.float64)
+        F = model.mesh_face[fa:fa + nf].astype(np.int64)
+        bvh = fcl.BVHModel()
+        bvh.beginModel(len(V), len(F))
+        bvh.addSubModel(V, F)
+        bvh.endModel()
+        objs[g] = fcl.CollisionObject(bvh, fcl.Transform())
+    return objs
+
+
+def self_penetration_depth(meta):
+    """Max REAL-MESH penetration depth (m, >=0) this frame over the candidate geom pairs.
+
+    Two stages:
+      1. broadphase -- mj_geomDistance on the geoms' CONVEX HULLS. A convex hull always
+         contains its mesh, so hulls not overlapping proves the meshes do not either: the
+         filter can never miss a real collision. It rejects ~99.6% of pairs.
+      2. narrowphase -- fcl.collide on the real triangle meshes for the few surviving
+         pairs, giving the true penetration depth.
+
+    This exists because MuJoCo's own mesh-mesh contacts use the convex hull: on unitree_g1
+    one torso geom's hull is 39.6x its mesh volume, which reported a 3.07 cm shoulder-torso
+    overlap where the real surfaces were 4.02 cm APART, and inflated a genuine
+    wrist-vs-thigh contact from 1.46 cm to 7.17 cm.
+    """
     model, data = meta["model"], meta["data"]
+    objs = meta["fcl_objects"]
+    fromto = np.zeros(6, dtype=np.float64)
     worst = 0.0
-    for i in range(data.ncon):
-        c = data.contact[i]
-        depth = -c.dist
-        if depth <= 0:
+    for ga, gb in meta["self_geom_pairs"]:
+        if mj.mj_geomDistance(model, data, ga, gb, 0.05, fromto) >= 0.0:
+            continue                                    # hulls apart -> meshes apart
+        for g in (ga, gb):
+            o = objs[g]
+            o.setRotation(data.geom_xmat[g].reshape(3, 3))
+            o.setTranslation(data.geom_xpos[g])
+        req = fcl.CollisionRequest(num_max_contacts=20, enable_contact=True)
+        res = fcl.CollisionResult()
+        fcl.collide(objs[ga], objs[gb], req, res)
+        if not res.is_collision:
             continue
-        b1 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom1])
-        b2 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom2])
-        if frozenset((b1, b2)) in structural:
-            continue
-        if depth > worst:
-            worst = depth
+        for c in res.contacts:
+            if c.penetration_depth > worst:
+                worst = float(c.penetration_depth)
     return worst
 
 
@@ -409,7 +519,7 @@ def human_toe_sticking(bvh_frames, velfactor=0.02):
     return out
 
 
-def evaluate_motion(data_dict, bvh_frames, meta, structural, args, mirrored=False):
+def evaluate_motion(data_dict, bvh_frames, meta, args, mirrored=False):
     model, data = meta["model"], meta["data"]
     N = len(data_dict["root_pos"])
     fps = int(data_dict.get("fps", 30))
@@ -424,9 +534,10 @@ def evaluate_motion(data_dict, bvh_frames, meta, structural, args, mirrored=Fals
     for t in range(N):
         data.qpos[:] = qpos_from(data_dict, meta, t)
         mj.mj_kinematics(model, data)
-        mj.mj_collision(model, data)
+        # No mj_collision: ground penetration reads mesh vertices and self penetration
+        # runs its own hull-broadphase + FCL narrowphase (see self_penetration_depth).
         ground[t] = ground_penetration_depth(meta)
-        self_pen[t] = self_penetration_depth(meta, structural)
+        self_pen[t] = self_penetration_depth(meta)
         for f in ("L", "R"):
             if meta["toe_bid"][f] is not None:
                 toe_xy[f][t] = data.xpos[meta["toe_bid"][f]][:2]
@@ -557,9 +668,20 @@ def main():
     ap.add_argument("--sources", nargs="+", default=None, metavar="SUBDIR[:LABEL]",
                     help="Explicit result subfolders to compare (OVERRIDES --algos), e.g. "
                          "'--sources colmo colmo_cbf'. Each item is 'subdir' or 'subdir:Label' "
-                         "(or 'subdir:Label:suffix'); the filename suffix defaults to empty. "
-                         "Lets you compare ANY subfolders of --results_dir, not just the "
-                         "built-in gmr/omniretarget/colmo/unitree.")
+                         "(or 'subdir:Label:suffix'); the filename suffix defaults to the "
+                         "built-in one for that subdir (e.g. omniretarget -> '_original'), "
+                         "else empty. Lets you compare ANY subfolders of --results_dir, not "
+                         "just the built-in gmr/omniretarget/colmo/unitree.")
+    ap.add_argument("--adjacent_hops", type=int, default=2,
+                    help="Exclude link pairs at most this many JOINTS apart from the "
+                         "self-penetration metric: rigidly adjacent links overlap at EVERY "
+                         "pose, so they are modelling artifacts. 1 (parent/child only) is not "
+                         "enough -- measured on kapex it leaves shoulder_roll_link_cover<->"
+                         "waist_pitch_link_cover overlapping in >80%% of frames for all three "
+                         "sources, because the arm root sits two joints from the torso. 2 "
+                         "(default) leaves zero permanent overlaps and only adds "
+                         "shoulder-root<->waist / hip<->waist pairs, none of which can "
+                         "realistically collide on their own.")
     ap.add_argument("--pen_thresh", type=float, default=0.01, help="Self-penetration threshold [m].")
     ap.add_argument("--ground_thresh", type=float, default=0.01,
                     help="Ground-penetration threshold [m] (default: --pen_thresh).")
@@ -595,22 +717,34 @@ def main():
             parts = spec.split(":")
             subdir = parts[0]
             label = parts[1] if len(parts) > 1 and parts[1] else subdir
-            suffix = parts[2] if len(parts) > 2 else ""
+            # Suffix defaults to the built-in one for this subdir (so '--sources
+            # omniretarget' keeps its '_original'), else empty.
+            suffix = parts[2] if len(parts) > 2 else \
+                ALGO_TABLE.get(subdir, {}).get("suffix", "")
             ALGO_TABLE[subdir] = dict(subdir=subdir, suffix=suffix, label=label)
             keys.append(subdir)
         args.algos = keys
 
     meta = robot_metadata(args.robot)
-    structural = structural_self_pairs(meta)
-    same_chain = same_chain_pairs(meta)                 # ReactOR: ignore same-chain collisions
-    ignore_self = structural | same_chain               # combined self-penetration exclusion
+    # Self-penetration exclusions, mesh-based metric:
+    #   * pairs inside one limb group (Larm / Rarm / Lleg / Rleg / torso+head, pelvis in
+    #     torso AND both legs) -- a chain overlapping itself is not a self-collision
+    #   * pairs at most --adjacent_hops joints apart -- rigidly close links whose convex
+    #     hulls overlap at every pose (this is what kills shoulder-vs-torso)
+    # There is NO neutral-pose test any more: it also exempted real collisions.
+    group_pairs = body_group_pairs(meta)
+    adj_pairs = adjacent_link_pairs(meta, args.adjacent_hops)
+    ignore_self = group_pairs | adj_pairs
     print(f"[eval] robot={args.robot}  dof={meta['n_dof']}  "
           f"vel-limits from {meta['urdf_name']}  floor_z={meta['floor_z']:.3f}")
-    print(f"[eval] real-mesh collision geoms: {len(meta['mesh_geom_ids'])} | "
-          f"structural self-pairs EXCLUDED: "
-          f"{sorted('<->'.join(sorted(p)) for p in structural)}")
-    print(f"[eval] same-kinematic-chain pairs also EXCLUDED (ancestor-descendant): "
-          f"{len(same_chain)} pairs")
+    print(f"[eval] real-mesh collision geoms: {len(meta['mesh_geom_ids'])}")
+    meta["self_geom_pairs"] = build_self_collision_pairs(meta, ignore_self)
+    meta["fcl_objects"] = build_fcl_objects(meta)
+    print(f"[eval] self-pair exclusions: {len(group_pairs)} same-limb-group + "
+          f"{len(adj_pairs)} within-{args.adjacent_hops}-joint "
+          f"(union {len(ignore_self)}); arm<->torso and arm<->pelvis are SCORED")
+    print(f"[eval] self-penetration: {len(meta['self_geom_pairs'])} candidate geom pairs, "
+          f"convex-hull broadphase + exact FCL mesh narrowphase")
 
     motions = args.motions or common_motions(args.results_dir, args.algos, args.motion_dir)
     if args.max_motions:
@@ -649,7 +783,7 @@ def main():
                 d = {**d, "root_pos": d["root_pos"][::args.stride],
                      "root_rot": np.asarray(d["root_rot"])[::args.stride],
                      "dof_pos": d["dof_pos"][::args.stride]}
-            r = evaluate_motion(d, bvh_frames, meta, ignore_self, args,
+            r = evaluate_motion(d, bvh_frames, meta, args,
                                 mirrored=(key in args.mirror))
             per_rows.append((motion, key, r))
             for m in agg[key]:

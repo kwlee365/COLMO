@@ -9,10 +9,19 @@ parameters:
   ik_convergence_tol : 1.0e-8   # IK loop early-stop: |err_t - err_{t-1}| < tol
   lm_damping : 1.0          # per-FrameTask Levenberg-Marquardt damping
   motion_fps : 30           # frame rate assumed for the foot-contact threshold
-  ground_offset : 0.0    # per-frame robot ground offset [m] (apply_ground_offset)
+  # Constant manual ground-height nudge [m], added ON TOP of the frame-0 auto-calibration
+  # (final offset = calibrated foot gap + this). >0 lifts the robot, <0 lowers it. Use it
+  # to fine-tune ground contact after warmup without touching the calibration.
+  ground_offset : 0.0
+  # Geometry the frame-0 ground calibration measures the foot height from:
+  #   "mesh"    -> fine CAD/visual mesh vertices (tight; default).
+  #   "capsule" -> the group-2 collision capsules the ground CBF enforces (looser,
+  #                consistent with the constraint -> less foot chatter). Searches the
+  #                ground_anchor_bodies AND their descendants (e.g. toe-link foot capsules).
+  ground_calib_geom : capsule
   max_base_horizontal_speed : 1.0
   base_speed_cap_mode : per_frame
-  
+
   ground_calib_warmup_iter : 200
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf

@@ -84,8 +84,13 @@ def kp_error_cm(rt, kp):
     return float(np.mean(errs)) * 100.0 if errs else np.nan
 
 
-def collision_metrics(qpos_list, meta, ignore_self, gthr, thr):
-    """Real-mesh ground/self penetration over a retargeted qpos trajectory."""
+def collision_metrics(qpos_list, meta, gthr, thr):
+    """Real-mesh ground/self penetration over a retargeted qpos trajectory.
+
+    No mj_collision: ground penetration reads the mesh vertices directly and self
+    penetration runs its own convex-hull broadphase + FCL mesh narrowphase off the
+    pair list prepared in main() -- the same machinery evaluate_motion uses.
+    """
     model, data = meta["model"], meta["data"]
     N = len(qpos_list)
     ground = np.zeros(N)
@@ -93,9 +98,8 @@ def collision_metrics(qpos_list, meta, ignore_self, gthr, thr):
     for t, q in enumerate(qpos_list):
         data.qpos[:] = q                         # COLMO qpos == eval qpos layout (pos,quat wxyz,dof)
         mj.mj_kinematics(model, data)
-        mj.mj_collision(model, data)
         ground[t] = ek.ground_penetration_depth(meta)
-        selfp[t] = ek.self_penetration_depth(meta, ignore_self)
+        selfp[t] = ek.self_penetration_depth(meta)
     g = ground > gthr
     s = selfp > thr
     return dict(
@@ -106,18 +110,27 @@ def collision_metrics(qpos_list, meta, ignore_self, gthr, thr):
     )
 
 
-def run_one(tgt_robot, frames, height, eps_token, meta, ignore_self, gthr, thr, max_frames):
+def run_one(tgt_robot, frames, height, eps_token, meta, gthr, thr, max_frames,
+            speed_cap=True):
     rt = make_retargeter(tgt_robot, height, eps_token)
     kp = kp_target_ids(rt)
     if max_frames and len(frames) > max_frames:
         frames = frames[:max_frames]
+    # Base horizontal-speed cap, exactly as the real retarget scripts (bvh_to_robot.py &
+    # co.) do: called ONCE per motion before the loop. It also resets the frame counter,
+    # so it must run even when the cap itself is disabled in collision_cfg.yaml. Without
+    # it _root_xy_traj stays None and the root falls back to the plain scalar scaling,
+    # which is NOT what the deployed pipeline produces on fast clips (run/sprint reach a
+    # nominal 4.4 m/s that the 3.0 m/s cap pulls down).
+    if speed_cap:
+        rt.adjust_hips_scale_for_motion(frames)
     qpos_list, kperrs = [], []
-    for fr in frames:
-        q = rt.retarget(fr)
+    for i, fr in enumerate(frames):
+        q = rt.retarget(fr, frame_idx=i if speed_cap else None)
         assert q.shape[0] == meta["model"].nq, (q.shape[0], meta["model"].nq)
         qpos_list.append(q.copy())
         kperrs.append(kp_error_cm(rt, kp))
-    cm = collision_metrics(qpos_list, meta, ignore_self, gthr, thr)
+    cm = collision_metrics(qpos_list, meta, gthr, thr)
     cm["KpErr"] = float(np.nanmean(kperrs))
     cm["N"] = len(qpos_list)
     return cm
@@ -136,20 +149,46 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--robot", default="unitree_g1")
     ap.add_argument("--bvh_dir", default=str(HERE.parent / "human_motion" / "lafan1"))
-    ap.add_argument("--motions", nargs="+", default=DEFAULT_MOTIONS)
+    ap.add_argument("--motions", nargs="+", default=DEFAULT_MOTIONS,
+                    help="Motion basenames, or the single word 'all' to sweep every "
+                         ".bvh in --bvh_dir (60 clips / 383k frames for LAFAN1).")
     ap.add_argument("--eps", nargs="+", default=DEFAULT_EPS,
                     help="epsilon list; 'cbf' == inf (nominal CBF, no ISSf margin).")
     ap.add_argument("--max_frames", type=int, default=0, help="cap frames/motion (0 = full).")
     ap.add_argument("--pen_thresh", type=float, default=0.01)
     ap.add_argument("--ground_thresh", type=float, default=0.01)
+    ap.add_argument("--adjacent_hops", type=int, default=2,
+                    help="Self-collision pairs at most this many joints apart are "
+                         "excluded (same default as eval_kinematic.py).")
+    ap.add_argument("--no_speed_cap", action="store_true",
+                    help="Skip adjust_hips_scale_for_motion, i.e. retarget WITHOUT the "
+                         "base horizontal-speed cap. Off by default so the ablation "
+                         "matches the deployed retarget pipeline.")
     ap.add_argument("--out", default=str(HERE.parent / "ablation_issf.csv"))
     args = ap.parse_args()
 
+    # "--motions all" -> every clip in the BVH directory, in sorted order.
+    if len(args.motions) == 1 and args.motions[0] == "all":
+        args.motions = sorted(p.stem for p in pathlib.Path(args.bvh_dir).glob("*.bvh"))
+        if not args.motions:
+            raise SystemExit(f"No .bvh files found in {args.bvh_dir}")
+
     meta = ek.robot_metadata(args.robot)
-    ignore_self = ek.structural_self_pairs(meta) | ek.same_chain_pairs(meta)
+    # Self-penetration exclusions, wired exactly as eval_kinematic.main does so the two
+    # scripts score the same collisions: pairs inside one limb group, plus pairs at most
+    # --adjacent_hops joints apart on the weld-collapsed tree.
+    group_pairs = ek.body_group_pairs(meta)
+    adj_pairs = ek.adjacent_link_pairs(meta, args.adjacent_hops)
+    meta["self_geom_pairs"] = ek.build_self_collision_pairs(
+        meta, group_pairs | adj_pairs)
+    meta["fcl_objects"] = ek.build_fcl_objects(meta)
     gthr, thr = args.ground_thresh, args.pen_thresh
     print(f"[ablation] robot={args.robot} dof={meta['n_dof']} floor_z={meta['floor_z']:.3f} "
-          f"| motions={len(args.motions)} eps={args.eps} max_frames={args.max_frames or 'full'}")
+          f"| motions={len(args.motions)} eps={args.eps} max_frames={args.max_frames or 'full'} "
+          f"| base speed cap {'OFF' if args.no_speed_cap else 'ON'}")
+    print(f"[ablation] self-penetration: {len(meta['self_geom_pairs'])} candidate geom "
+          f"pairs ({len(group_pairs)} same-limb-group + {len(adj_pairs)} "
+          f"within-{args.adjacent_hops}-joint exclusions)")
 
     # Preload each BVH once (frames + measured human height); reused across all epsilon.
     motions = {}
@@ -164,7 +203,8 @@ def main():
         for m in args.motions:
             frames, h = motions[m]
             t0 = time.time()
-            cm = run_one(args.robot, frames, h, eps, meta, ignore_self, gthr, thr, args.max_frames)
+            cm = run_one(args.robot, frames, h, eps, meta, gthr, thr, args.max_frames,
+                         speed_cap=not args.no_speed_cap)
             rows.append((eps, m, cm))
             print(f"[eps={eps:>5} {m:26}] N={cm['N']:5d} Pg={cm['Pg']:5.1f}% "
                   f"Dg={cm['Dg']:5.2f} Ps={cm['Ps']:5.1f}% Ds={cm['Ds']:5.2f} "

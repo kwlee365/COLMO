@@ -18,12 +18,27 @@ Example
     python scripts/vis_compare_retargeting.py --motion dance1_subject1 \
         --algos colmo gmr --record_video --video_path videos/dance1.mp4
 
+    # PNG stills at three frames, human drawn at its true captured size
+    # (no viewer needed -- works over ssh with MUJOCO_GL=egl)
+    python scripts/vis_compare_retargeting.py --motion dance1_subject1 \
+        --human_mode original --snapshot_frames 0 60 120 --snapshot_dir figures
+
+    # every frame from 0 to 500 (inclusive), human alone, no robots
+    python scripts/vis_compare_retargeting.py --motion dance1_subject1 \
+        --algos --snapshot_frames 0-500 --snapshot_dir figures
+
+``--human_mode`` picks how the human skeleton is drawn: ``scaled`` (default, the
+IK config's per-bone ``human_scale_table``, i.e. the reference the retargeter
+tracks), ``original`` (the captured human at its true size), or
+``scaled_with_keypoint`` (scaled, keybody markers only).
+
 The layout mirrors ``scripts/vis_colmo_with_bvh.py``: the human skeleton is drawn
 with ``user_scn`` markers (red joints, yellow bones) while the robots are real
 MJCF meshes composed into one model via ``mujoco.MjSpec`` attachment.
 """
 
 import argparse
+import os
 import pickle
 import time
 from pathlib import Path
@@ -51,9 +66,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ALGO_TABLE = {
     "colmo": dict(subdir="colmo", suffix="", label="COLMO",
                   color=(0.20, 0.80, 0.35, 1.0)),
+    "colmo_shoulder_yaw": dict(subdir="colmo_shoulder_yaw", suffix="",
+                               label="COLMO (shoulder-yaw)",
+                               color=(0.80, 0.35, 0.85, 1.0)),
     "gmr": dict(subdir="gmr", suffix="", label="GMR",
                 color=(0.25, 0.50, 1.00, 1.0)),
-    "omniretarget": dict(subdir="omniretarget", suffix="",
+    "omniretarget": dict(subdir="omniretarget", suffix="_original",
                          label="OmniRetarget", color=(1.00, 0.55, 0.10, 1.0)),
 }
 
@@ -191,6 +209,52 @@ def build_effective_scale(bones, parents, base_scale):
     return eff
 
 
+def build_scaled_skeleton(args, frames, bones, parents, base_scale, h_root):
+    """Per-bone scale for --human_mode scaled, plus COLMO's base-speed cap.
+
+    The cap makes the drawn skeleton travel at the same (capped) speed as the COLMO
+    robot. It reads ``max_base_horizontal_speed`` and ``base_speed_cap_mode`` from the
+    --robot's collision_cfg and is a no-op when unset:
+      per_frame -> precompute the saturated root xy trajectory with the SAME helper the
+                   retargeter uses (returned as ``root_xy_traj``, looked up per frame).
+      clip      -> shrink the root xy scale once, as adjust_hips_scale_for_motion does.
+
+    Returns (eff_scale, root_xy_traj); ``root_xy_traj`` is None outside per_frame mode.
+    """
+    root_xy_traj = None
+    try:
+        import yaml
+        _pp = yaml.safe_load(
+            open(ROBOT_XML_DICT[args.robot].parent / "collision_cfg.yaml"))["parameters"]
+        _limit = _pp.get("max_base_horizontal_speed")
+        _fps = float(_pp.get("motion_fps", 30))
+        _mode = str(_pp.get("base_speed_cap_mode", "per_frame")).lower()
+    except Exception:
+        _limit, _fps, _mode = None, 30.0, "per_frame"
+    if _limit and float(_limit) > 0 and h_root in base_scale and len(frames) > 1:
+        _rxy = np.array([np.asarray(frames[t][h_root][0], float)[:2]
+                         for t in range(len(frames))])
+        _s = np.array(base_scale[h_root], dtype=float)
+        if _s.ndim == 0:
+            _s = np.array([float(_s)] * 3)
+        if _mode == "per_frame":
+            root_xy_traj, _info = saturate_root_xy(_rxy, _s[:2], _limit, _fps)
+            print(f"[skeleton] base-speed cap {_limit} m/s (per_frame) -> saturated "
+                  f"{100 * _info['saturated_frac']:.1f}% of frames, base peak "
+                  f"{_info['base_peak']:.2f} m/s")
+        else:
+            _peak = float(np.percentile(
+                np.linalg.norm(np.diff(_rxy, axis=0), axis=1) * _fps, 99.5))
+            if _peak > 1e-9:
+                _cap = float(_limit) / _peak
+                _s[0] = min(float(_s[0]), _cap)
+                _s[1] = min(float(_s[1]), _cap)
+                base_scale[h_root] = _s
+                print(f"[skeleton] base-speed cap {_limit} m/s (clip) -> Hips xy scale "
+                      f"{float(_s[0]):.4f} (peak {_peak:.2f} m/s)")
+    return build_effective_scale(bones, parents, base_scale), root_xy_traj
+
+
 def build_keypoint_edges(bones, parents, keypoint_set):
     """Reduced skeleton over ``keypoint_set``: connect each keypoint to its NEAREST
     ancestor keypoint in the raw bone hierarchy (skipping non-keypoint bones), so a
@@ -269,12 +333,12 @@ def resolve_robot_sources(args, motion):
     explicit = {"colmo": args.colmo_pkl, "gmr": args.gmr_pkl,
                 "omniretarget": args.omni_pkl,}
     sources = []
-    for key in args.algos:
+    for i, key in enumerate(args.algos):
         if key not in ALGO_TABLE:
             print(f"[yellow]Unknown algo '{key}', skipping.[/yellow]")
             continue
         spec = ALGO_TABLE[key]
-        if explicit[key] is not None:
+        if explicit.get(key) is not None:
             path = Path(explicit[key])
         else:
             path = results_dir / spec["subdir"] / f"{motion}{spec['suffix']}.pkl"
@@ -290,7 +354,7 @@ def resolve_robot_sources(args, motion):
             key=key,
             label=spec["label"],
             color=spec["color"],
-            prefix=f"{key}_",
+            prefix=f"a{i}_",
             root_pos=root_pos,
             root_rot=root_rot,
             dof_pos=dof_pos,
@@ -303,7 +367,25 @@ def resolve_robot_sources(args, motion):
 
 
 def build_scene_model(xml_path, sources):
-    """Compose one MuJoCo model containing all robots (each name-prefixed)."""
+    """Compose one MuJoCo model containing all robots (each name-prefixed).
+
+    With no robots (``--algos`` passed no names, or none of them resolved to a pkl)
+    the scene becomes the robot XML's own backdrop -- floor, light, skybox and
+    <visual> settings -- with the robot itself removed, so the human skeleton is
+    drawn on the usual ground rather than into an empty void. Deleting the robot
+    body orphans everything that references its joints, so the actuator / sensor /
+    keyframe / equality / tendon lists go with it or the compile fails.
+    """
+    if not sources:
+        spec = mj.MjSpec.from_file(str(xml_path))
+        for body in list(spec.worldbody.bodies):
+            spec.delete(body)
+        for referencing in (spec.actuators, spec.sensors, spec.keys,
+                            spec.equalities, spec.tendons):
+            for item in list(referencing):
+                spec.delete(item)
+        return spec.compile()
+
     parent = mj.MjSpec()
     for src in sources:
         child = mj.MjSpec.from_file(str(xml_path))
@@ -338,6 +420,89 @@ def null_geom_names(model):
         model.name_geomadr[gid] = null_pos
 
 
+NAMED_COLORS = {"white": (1.0, 1.0, 1.0), "black": (0.0, 0.0, 0.0),
+                "gray": (0.5, 0.5, 0.5), "grey": (0.5, 0.5, 0.5)}
+
+
+def parse_frame_spec(text):
+    """argparse type for one --snapshot_frames token: ``N``, ``A-B`` or ``A-B:STEP``.
+
+    Returns the frame indices the token stands for, with ``A-B`` INCLUSIVE of B, so
+    ``--snapshot_frames 0 60 100-200:10`` means frame 0, frame 60, and every 10th
+    frame from 100 through 200.
+    """
+    t = text.strip()
+    if "-" not in t:
+        try:
+            i = int(t)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"bad frame {text!r}; use N, A-B or A-B:STEP")
+        if i < 0:
+            raise argparse.ArgumentTypeError(f"negative frame {text!r}")
+        return [i]
+    span, _, step_text = t.partition(":")
+    start_text, _, end_text = span.partition("-")
+    try:
+        start, end = int(start_text), int(end_text)
+        step = int(step_text) if step_text else 1
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"bad frame range {text!r}; use A-B or A-B:STEP")
+    if start < 0:
+        raise argparse.ArgumentTypeError(f"negative frame in {text!r}")
+    if step <= 0:
+        raise argparse.ArgumentTypeError(f"step must be positive in {text!r}")
+    if end < start:
+        raise argparse.ArgumentTypeError(f"empty range {text!r} (end before start)")
+    return list(range(start, end + 1, step))
+
+
+def parse_color(s):
+    """argparse type: 'white'/'black'/'gray', '#rrggbb', or 'r,g,b' (0-1 or
+    0-255). Returns an (r, g, b) tuple in 0-1."""
+    t = s.strip().lower()
+    if t in NAMED_COLORS:
+        return NAMED_COLORS[t]
+    if t.startswith("#") and len(t) == 7:
+        return tuple(int(t[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+    vals = [float(p) for p in t.replace(",", " ").split()]
+    if len(vals) == 3:
+        scale = 255.0 if max(vals) > 1.0 else 1.0
+        return tuple(v / scale for v in vals)
+    raise argparse.ArgumentTypeError(
+        f"bad color {s!r}; use a name, #rrggbb, or 'r,g,b'")
+
+
+def set_skybox_color(model, rgb):
+    """Overwrite every skybox texture with a solid color so the rendered
+    background is that flat color instead of the scene's gradient sky. Must be
+    called BEFORE the GL context/renderer is created (textures upload then)."""
+    col = np.clip(np.asarray(rgb, dtype=float) * 255.0, 0, 255).astype(np.uint8)
+    for i in range(model.ntex):
+        if model.tex_type[i] != mj.mjtTexture.mjTEXTURE_SKYBOX:
+            continue
+        adr = int(model.tex_adr[i])
+        nch = int(model.tex_nchannel[i])
+        n = int(model.tex_height[i]) * int(model.tex_width[i]) * nch
+        block = model.tex_data[adr:adr + n].reshape(-1, nch)
+        block[:, :3] = col[:3]
+
+
+def apply_background(model, rgb):
+    """Make the ENTIRE backdrop a single solid color. The skybox is unlit, so we
+    recolor it to ``rgb`` and then HIDE the floor plane(s) (a lit surface would
+    shade to gray even when painted white); with the floor gone the white skybox
+    fills the whole frame, top to bottom. Shadows are disabled too (nothing left
+    to catch them). Must run BEFORE the GL context/renderer is created."""
+    set_skybox_color(model, rgb)
+    for gid in range(model.ngeom):
+        if model.geom_type[gid] == mj.mjtGeom.mjGEOM_PLANE:
+            model.geom_rgba[gid, 3] = 0.0       # hide floor -> skybox shows through
+    if model.nlight:
+        model.light_castshadow[:] = 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Visualize BVH human motion and multiple retargeted robot "
@@ -348,9 +513,16 @@ def main():
                              "'all' to batch over every .bvh in --motion_dir.")
     parser.add_argument("--robot", type=str, default="unitree_g1",
                         choices=list(ROBOT_XML_DICT.keys()))
-    parser.add_argument("--algos", nargs="+",
+    parser.add_argument("--background", type=parse_color, default=None,
+                        metavar="COLOR",
+                        help="Solid background color: a name (white/black/gray), "
+                             "a hex '#rrggbb', or 'r,g,b' (0-1 or 0-255). "
+                             "Default: keep the scene's gradient sky.")
+    parser.add_argument("--algos", nargs="*",
                         default=["colmo", "gmr", "omniretarget"],
-                        help="Which algorithms to show, in left-to-right order.")
+                        help="Which algorithms to show, in left-to-right order. "
+                             "Pass '--algos' with no names to show no robots at all, "
+                             "i.e. the human skeleton alone on the usual ground.")
 
     # Data locations (defaults resolve relative to the repo root).
     parser.add_argument("--results_dir", type=str,
@@ -366,6 +538,17 @@ def main():
     parser.add_argument("--format", choices=["lafan1", "nokov"], default="lafan1")
     parser.add_argument("--no_human", action="store_true",
                         help="Do not draw the BVH human skeleton.")
+    parser.add_argument("--human_mode",
+                        choices=["original", "scaled", "scaled_with_keypoint"],
+                        default="scaled",
+                        help="How the human skeleton is drawn. scaled (default): "
+                             "shrunk onto the robot's proportions with the IK config's "
+                             "human_scale_table, i.e. the reference the retargeter "
+                             "actually tracks. original: the captured human at its true "
+                             "size -- no per-bone scaling and no base-speed cap, so it "
+                             "is taller than the robots and travels at its own speed. "
+                             "scaled_with_keypoint: scaled, but only the retarget "
+                             "keybodies are drawn (same as --keypoints_from_config).")
     parser.add_argument("--keypoints", nargs="+", default=None, metavar="BONE",
                         help="If given, draw the human skeleton markers ONLY for these "
                              "bone names (e.g. --keypoints Hips LeftHand RightHand "
@@ -376,7 +559,8 @@ def main():
                         help="Draw markers only for the retarget keybodies, i.e. the "
                              "keys of human_scale_table in the robot's IK config JSON "
                              "(bvh_<format>_to_<robot>.json). Takes precedence over "
-                             "--keypoints.")
+                             "--keypoints. Implied by "
+                             "--human_mode scaled_with_keypoint.")
 
     # Layout / playback.
     parser.add_argument("--spacing", type=float, default=1.5,
@@ -423,21 +607,47 @@ def main():
                              "'--mirror' with no names to disable.")
 
     # Camera.
-    parser.add_argument("--cam_distance", type=float, default=4.5)
+    parser.add_argument("--cam_distance", type=float, default=None,
+                        help="Camera distance (m). Default: 4.5 to span the row of "
+                             "robots, or 2.8 when the human skeleton is alone on "
+                             "screen (--algos with no names).")
     parser.add_argument("--cam_azimuth", type=float, default=None)
     parser.add_argument("--cam_elevation", type=float, default=-15.0)
     parser.add_argument("--no_follow_camera", action="store_true")
-    parser.add_argument("--lookat_shift", type=float, default=0.73,
+    parser.add_argument("--lookat_shift", type=float, default=None,
                         help="Slide the camera reference (lookat) point sideways "
                              "in the image plane: positive = left, negative = "
                              "right (meters). The scene appears to shift the "
-                             "opposite way.")
+                             "opposite way. Default: 0 for a robots-only run "
+                             "(camera centered between the robots), 0.73 when the "
+                             "human skeleton is drawn (to keep it in frame).")
 
-    # Video recording.
+    # Video recording / snapshots. Both go through the same offscreen renderer, so
+    # --video_width/--video_height and --msaa size the PNGs too.
     parser.add_argument("--record_video", action="store_true")
     parser.add_argument("--video_path", type=str, default=None,
                         help="Output video path. Default: videos/<motion>.mp4, "
                              "or videos/all.mp4 when --motion all.")
+    parser.add_argument("--snapshot_frames", type=parse_frame_spec, nargs="+",
+                        default=None, metavar="SPEC",
+                        help="Frames to save as PNG stills into --snapshot_dir. Each "
+                             "SPEC is a single index (60), an inclusive range "
+                             "(0-500), or a strided range (0-500:10); mix them freely "
+                             "('0 60 100-200:10'). Without --record_video the run "
+                             "stops after the last requested frame instead of playing "
+                             "the whole clip. In batch mode (--motion all) these "
+                             "frames are captured for EVERY motion.")
+    parser.add_argument("--snapshot_all", action="store_true",
+                        help="Save EVERY rendered frame as a PNG still into "
+                             "--snapshot_dir.")
+    parser.add_argument("--snapshot_dir", type=str, default="figures",
+                        help="Where --snapshot_frames / --snapshot_all PNGs are "
+                             "written (as <motion>_<robot>_<human_mode>_<frame>.png).")
+    parser.add_argument("--headless", action="store_true",
+                        help="Do not open the interactive viewer (needed over ssh; "
+                             "pair with MUJOCO_GL=egl and --record_video / "
+                             "--snapshot_frames). Implied by either output mode, "
+                             "which already render offscreen only.")
     parser.add_argument("--video_width", type=int, default=1280)
     parser.add_argument("--video_height", type=int, default=720)
     parser.add_argument("--video_quality", type=int, default=8,
@@ -453,6 +663,31 @@ def main():
                              "live viewer always uses MuJoCo's default 150.")
 
     args = parser.parse_args()
+
+    # A headless GL backend (MUJOCO_GL=egl/osmesa) has no window system, so the live
+    # passive viewer cannot open -- creating its context fails and takes the process
+    # down with it. Auto-switch to offscreen rendering instead.
+    gl_backend = os.environ.get("MUJOCO_GL", "").lower()
+    if gl_backend in ("egl", "osmesa") and not args.headless:
+        args.headless = True
+        print(f"[yellow]MUJOCO_GL={gl_backend}: no on-screen window available -> "
+              f"forcing --headless (offscreen render).[/yellow]")
+
+    # Each --snapshot_frames token parsed to a list of indices (ranges expand); flatten
+    # them into one sorted, de-duplicated frame list.
+    if args.snapshot_frames:
+        args.snapshot_frames = sorted(
+            {i for spec in args.snapshot_frames for i in spec})
+
+    snapshots = bool(args.snapshot_frames) or args.snapshot_all
+    if args.headless and not (args.record_video or snapshots):
+        raise SystemExit("--headless with neither --record_video nor "
+                         "--snapshot_frames/--snapshot_all would render nothing.")
+    if snapshots:
+        os.makedirs(args.snapshot_dir, exist_ok=True)
+        count = "every frame" if args.snapshot_all \
+            else f"{len(args.snapshot_frames)} frame(s)"
+        print(f"[cyan]Snapshots ({count}) -> {args.snapshot_dir}/[/cyan]")
 
     # Default video name follows the motion: videos/<motion>.mp4, or
     # videos/all.mp4 for a full batch (an explicit --video_path overrides this).
@@ -477,7 +712,6 @@ def main():
     # into args.video_path (one file, not one-per-motion).
     mp4_writer = None
     if args.record_video:
-        import os
         import imageio
         video_dir = os.path.dirname(args.video_path)
         if video_dir and not os.path.exists(video_dir):
@@ -530,18 +764,26 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
     # direction is -(cos, sin) of the azimuth; screen-left = view x up.
     _az = np.deg2rad(cam_azimuth)
     _fwd = np.array([-np.cos(_az), -np.sin(_az), 0.0])
-    lookat_offset = np.cross(_fwd, [0.0, 0.0, 1.0]) * args.lookat_shift
+    left_dir = np.cross(_fwd, [0.0, 0.0, 1.0])   # screen-left; scaled by the
+    # resolved lookat_shift once we know whether the human is drawn (below).
 
     # --- Load robot motions -------------------------------------------------
+    # Zero robots is a legitimate request ("--algos" with no names, to look at the
+    # human alone), so it is only fatal when there is no human to fall back on.
     sources = resolve_robot_sources(args, motion)
     if not sources:
-        print(f"[yellow]{motion}: no robot motions found for "
-              f"{args.algos}, skipping.[/yellow]")
-        return
+        reason = ("no algorithms requested" if not args.algos
+                  else f"no robot motions found for {args.algos}")
+        if args.no_human:
+            print(f"[yellow]{motion}: {reason}, and --no_human leaves nothing "
+                  f"to draw -- skipping.[/yellow]")
+            return
+        print(f"[yellow]{motion}: {reason} -- drawing the human skeleton "
+              f"alone.[/yellow]")
 
     # Left-right mirror the requested algorithms (before facing alignment, so
     # the mirrored motion is then re-oriented to face the camera like the rest).
-    if args.mirror:
+    if args.mirror and sources:
         mirror_perm, mirror_sign = build_mirror_spec(ROBOT_XML_DICT[args.robot])
         for src in sources:
             if src["key"] not in args.mirror:
@@ -586,44 +828,20 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             base_scale = {k: np.asarray(v, dtype=float) * ratio
                           for k, v in ik_config["human_scale_table"].items()}
             h_root = ik_config["human_root_name"]
-            # Match COLMO's base-speed cap on the drawn skeleton so the human overlay travels
-            # at the same (capped) speed as the COLMO robot. Reads max_base_horizontal_speed
-            # and base_speed_cap_mode from the --robot's collision_cfg; no-op if unset.
-            #   per_frame -> precompute the saturated root xy trajectory with the SAME helper
-            #                the retargeter uses (root_xy_traj, looked up per frame below).
-            #   clip      -> shrink the root xy scale once, as adjust_hips_scale_for_motion does.
-            root_xy_traj = None
-            try:
-                import yaml
-                _pp = yaml.safe_load(
-                    open(ROBOT_XML_DICT[args.robot].parent / "collision_cfg.yaml"))["parameters"]
-                _limit = _pp.get("max_base_horizontal_speed")
-                _fps = float(_pp.get("motion_fps", 30))
-                _mode = str(_pp.get("base_speed_cap_mode", "per_frame")).lower()
-            except Exception:
-                _limit, _fps, _mode = None, 30.0, "per_frame"
-            if _limit and float(_limit) > 0 and h_root in base_scale and len(frames) > 1:
-                _rxy = np.array([np.asarray(frames[t][h_root][0], float)[:2]
-                                 for t in range(len(frames))])
-                _s = np.array(base_scale[h_root], dtype=float)
-                if _s.ndim == 0:
-                    _s = np.array([float(_s)] * 3)
-                if _mode == "per_frame":
-                    root_xy_traj, _info = saturate_root_xy(_rxy, _s[:2], _limit, _fps)
-                    print(f"[skeleton] base-speed cap {_limit} m/s (per_frame) -> saturated "
-                          f"{100 * _info['saturated_frac']:.1f}% of frames, base peak "
-                          f"{_info['base_peak']:.2f} m/s")
-                else:
-                    _peak = float(np.percentile(
-                        np.linalg.norm(np.diff(_rxy, axis=0), axis=1) * _fps, 99.5))
-                    if _peak > 1e-9:
-                        _cap = float(_limit) / _peak
-                        _s[0] = min(float(_s[0]), _cap)
-                        _s[1] = min(float(_s[1]), _cap)
-                        base_scale[h_root] = _s
-                        print(f"[skeleton] base-speed cap {_limit} m/s (clip) -> Hips xy scale "
-                              f"{float(_s[0]):.4f} (peak {_peak:.2f} m/s)")
-            eff_scale = build_effective_scale(bones, parents, base_scale)
+
+            # --human_mode original: draw the captured human as it was recorded. Both the
+            # per-bone scaling and the base-speed cap below exist ONLY to bring the
+            # skeleton onto the robot's proportions, so neither applies here -- the human
+            # then stands taller than the robots and travels at its own (uncapped) speed,
+            # which is the point of the mode.
+            if args.human_mode == "original":
+                eff_scale = {b: 1.0 for b in frames[0]}
+                root_xy_traj = None
+                print(f"[skeleton] original size: no per-bone scaling, no base-speed cap "
+                      f"(human {height:.2f} m)")
+            else:
+                eff_scale, root_xy_traj = build_scaled_skeleton(
+                    args, frames, bones, parents, base_scale, h_root)
 
             # Frame-0 facing from the hip line (convention-independent, so it
             # agrees with the robots' +x heading). Rotate the whole skeleton
@@ -648,22 +866,26 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                          # like LeftFootMod that are present in the frames but not raw bones.
                          scale_bones=list(ik_config["human_scale_table"].keys()))
             print(f"[red]BVH human[/red]: {bvh_path.name} "
-                  f"({len(frames)} frames, height {height:.2f} m)")
+                  f"({len(frames)} frames, height {height:.2f} m, "
+                  f"mode {args.human_mode})")
         else:
             print(f"[yellow]BVH {bvh_path} not found, human skeleton disabled."
                   f"[/yellow]")
 
     # Optional keypoint filter: when set, only these bones get a marker, and a
     # bone-capsule is drawn only between two shown keypoints. None -> full skeleton.
-    # --keypoints_from_config (IK config human_scale_table keys) wins over --keypoints.
+    # --keypoints_from_config (IK config human_scale_table keys) wins over --keypoints,
+    # and --human_mode scaled_with_keypoint is exactly that filter.
     keypoint_set = None
-    if args.keypoints_from_config:
+    from_config = (args.keypoints_from_config
+                   or args.human_mode == "scaled_with_keypoint")
+    if from_config:
         if human is not None:
             keypoint_set = set(human["scale_bones"])
             print(f"[cyan]keypoints from IK config human_scale_table: "
                   f"{sorted(keypoint_set)}[/cyan]")
         else:
-            print("[yellow]--keypoints_from_config ignored (no human skeleton).[/yellow]")
+            print("[yellow]keypoint filter ignored (no human skeleton).[/yellow]")
     elif args.keypoints:
         keypoint_set = set(args.keypoints)
     if keypoint_set is not None and human is not None:
@@ -681,6 +903,11 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
     if keypoint_set is not None and human is not None:
         keypoint_edges = build_keypoint_edges(
             human["bones"], human["parents"], keypoint_set)
+
+    if not sources and human is None:
+        print(f"[yellow]{motion}: no robot motions and no BVH -- nothing to draw, "
+              f"skipping.[/yellow]")
+        return
 
     # --- Column layout ------------------------------------------------------
     # Human (if any) sits at column 0, robots follow. Columns are centered on
@@ -712,6 +939,38 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
     for k, src in enumerate(sources):
         src["offset"] = column_offset((1 if human else 0) + k)
         src["root0_xy"] = src["root_pos"][0, :2]
+
+    def human_root_world(i):
+        """On-screen position of the human's root at frame ``i``.
+
+        The same expression ``draw_overlays`` evaluates for the root marker, i.e.
+        ``rp(h_root) + shift`` -- the root's own local offset is zero, so scaling
+        collapses to the root term. Only the follow-camera needs it outside the
+        draw path (to track the human when no robot is on screen).
+        """
+        frame = human["frames"][min(i, human["n"] - 1)]
+        h_root = human["h_root"]
+        raw_root = np.asarray(frame[h_root][0], dtype=np.float64)
+        scaled_root = np.asarray(human["eff_scale"].get(h_root, 1.0) * raw_root,
+                                 dtype=np.float64)
+        if human["root_xy_traj"] is not None:
+            scaled_root = scaled_root.copy()
+            scaled_root[:2] = human["root_xy_traj"][min(i, human["n"] - 1)]
+        p = human["pivot"] + human["Rz"].apply(scaled_root - human["pivot"])
+        return p + horizontal_shift(human["offset"], human["root0_xy"], p[:2])
+
+    # Camera anchor: the fixed horizontal center of the ROBOT lanes (the human
+    # column, if any, is excluded), so the view sits between the N robots for any
+    # N. With no robots the human IS the scene, so it anchors on the human column
+    # instead. lookat_shift then slides it sideways; its default is 0 for a
+    # robots-only run (dead-centered) and 0.73 when the human is drawn alongside
+    # robots (nudged so the human column stays in frame) -- but 0 again when the
+    # human is alone, since there is nothing to make room for.
+    robots_center = np.mean([s["offset"] for s in sources], axis=0) if sources \
+        else human["offset"]
+    shift_val = args.lookat_shift if args.lookat_shift is not None \
+        else (0.73 if (human and sources) else 0.0)
+    lookat_offset = left_dir * shift_val
 
     # --- Compose and prepare the MuJoCo model ------------------------------
     xml_path = ROBOT_XML_DICT[args.robot]
@@ -760,14 +1019,30 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
 
     null_geom_names(model)
 
+    # Solid background color (skybox override), if requested. Must run before the
+    # viewer / offscreen renderer is created, since textures upload to the GL
+    # context at that point.
+    if args.background is not None:
+        apply_background(model, args.background)
+
     # Floor grid + lighting are defined in the robot scene XML (a flat floor and
     # a directional light), so nothing extra is needed here.
 
     total_frames = max([s["n"] for s in sources]
                        + ([human["n"]] if human else []))
-    motion_fps = args.motion_fps or sources[0]["fps"]
+    # Playback rate comes from the first robot's pkl; with no robots the BVH sets
+    # it (LAFAN1 is 30 fps, which is also the fallback the pkls carry).
+    motion_fps = args.motion_fps or (sources[0]["fps"] if sources else 30)
 
-    # --- Viewer setup -------------------------------------------------------
+    # --- Viewer / camera setup ----------------------------------------------
+    # When writing a video or PNG stills we render OFFSCREEN ONLY. Opening the
+    # live GLFW window at the same time as the offscreen mj.Renderer makes the
+    # two share/fight over the GL context, which tears or corrupts the captured
+    # frames (much worse under a mismatched GPU driver). So while rendering we
+    # skip the passive viewer and drive a standalone camera + option instead.
+    # For a robust headless GL context, run with ``MUJOCO_GL=egl``.
+    snapshot_set = set(args.snapshot_frames or [])
+    need_render = mp4_writer is not None or snapshot_set or args.snapshot_all
     paused = [False]
 
     def key_callback(keycode):
@@ -775,27 +1050,39 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             paused[0] = not paused[0]
             print(f"[{'PAUSED' if paused[0] else 'RESUMED'}] (SPACE toggles)")
 
-    viewer = mjv.launch_passive(model=model, data=data,
-                                show_left_ui=False, show_right_ui=False,
-                                key_callback=key_callback)
-    viewer.opt.flags[mj.mjtVisFlag.mjVIS_TRANSPARENT] = 0
-    viewer.opt.geomgroup[2] = 0  # hide collision geoms
-    # Model-geom labels off; the explicitly-set user_scn head labels still draw.
-    viewer.opt.label = mj.mjtLabel.mjLABEL_NONE
-
-    if args.cam_distance is not None:
-        viewer.cam.distance = args.cam_distance
+    if need_render or args.headless:
+        viewer = None
+        cam = mj.MjvCamera()
+        cam.type = mj.mjtCamera.mjCAMERA_FREE
+        opt = mj.MjvOption()
     else:
-        viewer.cam.distance = max(3.0, args.spacing * ncol + 1.5)
-    viewer.cam.azimuth = cam_azimuth
-    viewer.cam.elevation = args.cam_elevation
-    viewer.cam.lookat[:] = lookat_offset
+        viewer = mjv.launch_passive(model=model, data=data,
+                                    show_left_ui=False, show_right_ui=False,
+                                    key_callback=key_callback)
+        cam = viewer.cam
+        opt = viewer.opt
 
-    # --- Video recorder -----------------------------------------------------
-    # The writer is owned by the caller (shared across motions); here we only
-    # build this motion's offscreen renderer and append frames to it.
+    opt.flags[mj.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+    opt.geomgroup[2] = 0  # hide collision geoms
+    # Model-geom labels off; the explicitly-set user_scn head labels still draw.
+    opt.label = mj.mjtLabel.mjLABEL_NONE
+
+    # Default framing spans the row of robots; with the human alone on screen there
+    # is no row to span, so pull in to a single-character distance.
+    if args.cam_distance is not None:
+        cam.distance = args.cam_distance
+    else:
+        cam.distance = 4.5 if sources else 2.8
+    cam.azimuth = cam_azimuth
+    cam.elevation = args.cam_elevation
+    cam.lookat[:] = robots_center + lookat_offset
+
+    # --- Offscreen renderer (video + snapshots) -----------------------------
+    # The mp4 writer is owned by the caller (shared across motions); here we only
+    # build this motion's offscreen renderer and append frames to it. Snapshots
+    # come out of the same renderer, so they share the resolution and AA settings.
     renderer = None
-    if mp4_writer is not None:
+    if need_render:
         # MjSpec.attach does not carry over the child XML's <visual><global>
         # offscreen buffer size, so the composed model keeps MuJoCo's 640x480
         # default. mj.Renderer refuses any render larger than that buffer, so
@@ -875,12 +1162,33 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                     np.array([0, 0, src["label_z"]])
                 add_sphere(scene, head_pos, 0.05, src["color"], label=src["label"])
 
-    pbar = tqdm(total=total_frames, desc="compare")
+    # PNG stills. Named per motion so a batch run (and repeated runs with a
+    # different --human_mode) never overwrite each other's figures.
+    snap_count = 0
+    # Naming each PNG as it lands is useful for a handful of figures and pure noise
+    # for a whole range, so past a few frames only the closing tally is printed.
+    verbose_snaps = not args.snapshot_all and 0 < len(snapshot_set) <= 12
+    if snapshot_set or args.snapshot_all:
+        import imageio
+        tag = "" if args.no_human else f"_{args.human_mode}"
+        snap_name = f"{motion}_{args.robot}{tag}"
+        late = sorted(i for i in snapshot_set if i >= total_frames)
+        if late:
+            shown = late if len(late) <= 8 else late[:8] + ["..."]
+            print(f"[yellow]{len(late)} snapshot frame(s) {shown} are past the end "
+                  f"of {motion} ({total_frames} frames) -- not captured.[/yellow]")
+    # With snapshots only, there is nothing to capture past the last requested
+    # frame, so stop there instead of playing out the whole clip.
+    snapshot_stop = max(snapshot_set) if (
+        snapshot_set and mp4_writer is None and not args.snapshot_all) else None
+
+    pbar = tqdm(total=(total_frames if snapshot_stop is None
+                       else min(total_frames, snapshot_stop + 1)), desc="compare")
     rate_limiter = RateLimiter(frequency=motion_fps, warn=False)
     cur_i = 0
 
     try:
-        while viewer.is_running():
+        while (viewer.is_running() if viewer is not None else True):
             # 1) Push each robot's pose into its qpos block.
             if not paused[0]:
                 for src in sources:
@@ -894,28 +1202,44 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                     data.qpos[adr + 7:adr + 7 + ndof] = src["dof_pos"][t]
                 mj.mj_forward(model, data)
 
-            # 2) Camera follows the centroid of the robot bases.
+            # 2) Camera stays horizontally centered on the fixed robot-lane
+            # center (so it never drifts toward one robot) and follows only the
+            # vertical motion of the robot bases, keeping the row framed on jumps
+            # / crouches. With no robots it tracks the human's root height instead,
+            # which is the same behaviour applied to the only character on screen.
             if not args.no_follow_camera:
-                centroid = np.mean([data.xpos[s["base_bid"]] for s in sources],
-                                   axis=0)
-                viewer.cam.lookat[:] = centroid + lookat_offset
+                z = float(np.mean([data.xpos[s["base_bid"]][2] for s in sources])) \
+                    if sources else float(human_root_world(cur_i)[2])
+                cam.lookat[:] = np.array(
+                    [robots_center[0], robots_center[1], z]) + lookat_offset
 
-            # 3) Overlays (human skeleton + head labels).
-            viewer.user_scn.ngeom = 0
-            draw_overlays(viewer.user_scn)
+            # 3) Overlays for the live viewer (the offscreen recorder re-draws
+            #    them into its own render scene below).
+            if viewer is not None:
+                viewer.user_scn.ngeom = 0
+                draw_overlays(viewer.user_scn)
+                viewer.sync()
 
-            viewer.sync()
-
-            # 4) Video frame (overlays must be re-drawn into the render scene).
-            #    Skip while paused so the recording is not padded with dupes.
+            # 4) Offscreen frame -- one render feeds both the video and the PNG
+            #    stills (overlays must be re-drawn into the render scene). Skipped
+            #    while paused so the recording is not padded with dupes.
             if renderer is not None and not paused[0]:
-                renderer.update_scene(data, camera=viewer.cam,
-                                      scene_option=viewer.opt)
+                renderer.update_scene(data, camera=cam,
+                                      scene_option=opt)
                 draw_overlays(renderer.scene)
-                mp4_writer.append_data(renderer.render())
+                pixels = renderer.render()
+                if mp4_writer is not None:
+                    mp4_writer.append_data(pixels)
+                if args.snapshot_all or cur_i in snapshot_set:
+                    out = os.path.join(args.snapshot_dir,
+                                       f"{snap_name}_{cur_i:05d}.png")
+                    imageio.imwrite(out, pixels)
+                    snap_count += 1
+                    if verbose_snaps:
+                        print(f"[cyan]snapshot[/cyan] {out}")
 
-            # Cap to real time only for live viewing; when recording, render as
-            # fast as possible (the mp4 fps is fixed) so batches finish quickly.
+            # Cap to real time only for live viewing; when rendering, go as fast
+            # as possible (the mp4 fps is fixed) so batches finish quickly.
             if renderer is None:
                 rate_limiter.sleep()
 
@@ -924,6 +1248,8 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             pbar.update(1)
 
             cur_i += 1
+            if snapshot_stop is not None and cur_i > snapshot_stop:
+                break
             if cur_i >= total_frames:
                 if loop:
                     cur_i = 0
@@ -932,7 +1258,11 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                     break
     finally:
         pbar.close()
-        viewer.close()
+        if snap_count and not verbose_snaps:
+            print(f"[cyan]{snap_count} snapshot(s) -> "
+                  f"{os.path.join(args.snapshot_dir, snap_name)}_*.png[/cyan]")
+        if viewer is not None:
+            viewer.close()
         # Free this motion's GL renderer (the caller keeps the shared writer
         # open so the next motion appends to the same file).
         if renderer is not None:

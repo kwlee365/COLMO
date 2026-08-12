@@ -478,7 +478,17 @@ class CollisionFreeMotionRetargeting:
         self._root_xy_traj = None
         self._frame_idx = 0        # index of the frame currently being retargeted
         self._auto_frame_idx = 0   # running counter used when retarget() gets no frame_idx
-        self.ground_offset = params.get('ground_offset', -0.01)  # per-frame robot ground offset [m]
+        # ground_offset (config) is a CONSTANT manual nudge [m], applied ON TOP of the
+        # frame-0 auto-calibration: final effective offset = calibrated_gap + this const.
+        # (>0 lifts the robot, <0 lowers it.) Kept separate so the calibration never
+        # overwrites the config value.
+        self._ground_offset_const = params.get('ground_offset', -0.01)
+        self.ground_offset = self._ground_offset_const   # effective offset (calib adds to it)
+        # Geometry the frame-0 ground calibration measures the foot height from:
+        #   "mesh"    -> the fine CAD/visual mesh vertices (tight; default, back-compat).
+        #   "capsule" -> the group-2 collision capsules the ground CBF actually enforces
+        #                (looser, consistent with the constraint -> less foot chatter).
+        self.ground_calib_geom = str(params.get('ground_calib_geom', 'mesh')).lower()
         # Warmup iteration at which the first-frame ground calibration measures the robot's
         # foot float and folds it into ground_offset (see retarget()). The warmup foot pose
         # converges within a few dozen iters, so this only needs to leave enough remaining
@@ -978,12 +988,14 @@ class CollisionFreeMotionRetargeting:
                 if do_calib and k == calib_at:
                     gap = self.measure_foot_float()
                     if gap is not None:
-                        self.ground_offset = self.ground_offset + gap
+                        # effective offset = auto-calibrated gap + the config constant nudge
+                        self.ground_offset = gap + self._ground_offset_const
                         self.update_targets(human_data)     # re-target, now grounded
                         if self.verbose:
-                            print(f"[COLMO][Ground] Warmup calibration @iter {k}: measured "
-                                  f"foot float {gap:+.4f} m -> ground_offset="
-                                  f"{self.ground_offset:+.4f} m")
+                            print(f"[COLMO][Ground] Warmup calibration @iter {k} "
+                                  f"({self.ground_calib_geom}): foot float {gap:+.4f} m "
+                                  f"+ const {self._ground_offset_const:+.4f} m -> "
+                                  f"ground_offset={self.ground_offset:+.4f} m")
                     self._ground_calibrated = True
                 vel = mink.solve_ik(
                     self.configuration,
@@ -1215,24 +1227,57 @@ class CollisionFreeMotionRetargeting:
         return human_data
 
     def _ensure_foot_geom_cache(self):
-        """Cache, once, the floor height and each ground-anchor body's mesh geoms
-        (geom_id + local vertices) so measure_foot_float can find the real foot's lowest
-        world-z. The link MESHES (not the coarse capsule/sphere collision primitives) are
-        the robot's real foot surface, matching the ground metric in eval_kinematic."""
+        """Cache, once, the floor height and the ground-anchor feet's geoms used by
+        measure_foot_float. Two modes (self.ground_calib_geom):
+
+          "mesh"    -> the ground-anchor bodies' own fine CAD/visual MESH geoms
+                       (geom_id + local vertices); the robot's real foot surface, matching
+                       the ground metric in eval_kinematic. (default, back-compat)
+          "capsule" -> the group-2 collision CAPSULE geoms on the anchor bodies AND all
+                       their DESCENDANT bodies (e.g. the toe-link Foot1/Foot2 capsules that
+                       hang under the ankle). This is exactly the geometry the ground CBF
+                       enforces, so grounding the capsule (not the tighter mesh) keeps the
+                       calibration consistent with the constraint and reduces foot chatter.
+
+        Cache entries are (geom_id, local_vertices) in mesh mode, (geom_id, None) in
+        capsule mode (the capsule's world extent is read from FK at measure time)."""
         if self._foot_mesh_cache is not None:
             return
         planes = [g for g in range(self.model.ngeom)
                   if self.model.geom_type[g] == mj.mjtGeom.mjGEOM_PLANE]
         self._floor_z = float(self.model.geom_pos[planes[0], 2]) if planes else 0.0
-        cache = []
+
+        anchor_ids = set()
         for body_name in self.ground_anchor_bodies:
             try:
-                bid = self.model.body(body_name).id
+                anchor_ids.add(self.model.body(body_name).id)
             except KeyError:
                 print(f"[COLMO][Ground] WARNING: anchor body '{body_name}' not in model.")
-                continue
-            for g in range(self.model.ngeom):
-                if int(self.model.geom_bodyid[g]) != bid:
+        if not anchor_ids:
+            self._foot_mesh_cache = []
+            return
+
+        use_capsule = self.ground_calib_geom == "capsule"
+
+        def in_anchor_subtree(bid):
+            p = bid
+            while p != 0:
+                if p in anchor_ids:
+                    return True
+                p = int(self.model.body_parentid[p])
+            return False
+
+        cache = []
+        for g in range(self.model.ngeom):
+            bid = int(self.model.geom_bodyid[g])
+            if use_capsule:
+                if self.model.geom_type[g] != mj.mjtGeom.mjGEOM_CAPSULE:
+                    continue
+                if not in_anchor_subtree(bid):
+                    continue
+                cache.append((g, None))
+            else:
+                if bid not in anchor_ids:
                     continue
                 if self.model.geom_type[g] != mj.mjtGeom.mjGEOM_MESH:
                     continue
@@ -1240,20 +1285,40 @@ class CollisionFreeMotionRetargeting:
                 adr = int(self.model.mesh_vertadr[mid])
                 num = int(self.model.mesh_vertnum[mid])
                 cache.append((g, self.model.mesh_vert[adr:adr + num].astype(np.float64)))
+        if not cache:
+            print(f"[COLMO][Ground] WARNING: no {'capsule' if use_capsule else 'mesh'} "
+                  f"geoms found for anchor bodies {self.ground_anchor_bodies}; ground "
+                  f"calibration disabled.")
         self._foot_mesh_cache = cache
 
+    def _geom_lowest_z(self, gid):
+        """Lowest world-z of geom `gid` from the current FK: capsule -> lower cap center
+        minus radius; mesh -> lowest transformed vertex (uses the cached local verts)."""
+        data = self.configuration.data
+        if self.model.geom_type[gid] == mj.mjtGeom.mjGEOM_CAPSULE:
+            xp = data.geom_xpos[gid]
+            ax = data.geom_xmat[gid].reshape(3, 3)[:, 2]          # capsule long axis
+            r = float(self.model.geom_size[gid][0])
+            half = float(self.model.geom_size[gid][1])
+            return float(min((xp + half * ax)[2], (xp - half * ax)[2]) - r)
+        return None  # mesh handled inline (needs cached verts)
+
     def measure_foot_float(self):
-        """Height [m] of the robot's real foot meshes above the floor in the CURRENT
-        configuration (>=0 = floating, <0 = penetrating). Reads the FK already computed by
-        retarget() (mj_fwdPosition/mj_forward), so call it right after a retarget() step.
-        Returns None if no ground-anchor foot bodies/meshes are available."""
+        """Height [m] of the robot's foot geoms above the floor in the CURRENT configuration
+        (>=0 = floating, <0 = penetrating), measured from the link MESHES or the collision
+        CAPSULES per self.ground_calib_geom. Reads the FK already computed by retarget()
+        (mj_fwdPosition/mj_forward), so call it right after a retarget() step. Returns None
+        if no ground-anchor foot geoms are available."""
         self._ensure_foot_geom_cache()
         if not self._foot_mesh_cache:
             return None
         data = self.configuration.data
         lowest = np.inf
         for gid, verts in self._foot_mesh_cache:
-            zrow = data.geom_xmat[gid].reshape(3, 3)[2]          # world-z row
-            z = float((verts @ zrow + data.geom_xpos[gid][2]).min())
+            if verts is None:                                    # capsule
+                z = self._geom_lowest_z(gid)
+            else:                                                # mesh: lowest vertex world-z
+                zrow = data.geom_xmat[gid].reshape(3, 3)[2]
+                z = float((verts @ zrow + data.geom_xpos[gid][2]).min())
             lowest = min(lowest, z)
         return lowest - self._floor_z

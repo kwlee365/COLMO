@@ -17,6 +17,7 @@ setup(
     "mujoco",
     "numpy",
     "scipy",
+    "python-fcl",
     "pyyaml",
     "qpsolvers[proxqp]",
     "rich",

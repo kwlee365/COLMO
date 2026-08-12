@@ -114,9 +114,6 @@
                 <joint name="left_ankle_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.87267 0.5236" actuatorfrcrange="-50 50"/>
                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="left_ankle_pitch_link"/>
                 <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="left_ankle_pitch_link"/>
-                <!-- ADDED: collision -->
-                <geom class="cls_lleg" name="Left_Foot1" size ="0.015 0.09" pos="0.037 -0.02 -0.04" quat="0.707107 0 -0.707107 0" rgba="0 0 1 0.3" type="capsule" />
-                <geom class="cls_lleg" name="Left_Foot2" size ="0.015 0.09" pos="0.037 +0.02 -0.04" quat="0.707107 0 -0.707107 0" rgba="0 0 1 0.3" type="capsule" />
                 <body name="left_ankle_roll_link" pos="0 0 -0.017558">
                   <inertial pos="0.026505 0 -0.016425" quat="-0.000481092 0.728482 -0.000618967 0.685065" mass="0.608" diaginertia="0.00167218 0.0016161 0.000217621"/>
                   <joint name="left_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.2618 0.2618" actuatorfrcrange="-50 50"/>
@@ -126,7 +123,9 @@
                   <geom size="0.005" pos="0.12 0.03 -0.03" rgba="0.2 0.2 0.2 1"/>
                   <geom size="0.005" pos="0.12 -0.03 -0.03" rgba="0.2 0.2 0.2 1"/>
                   <body name="left_toe_link" pos="0.1 0 -0.02"/>
-
+                  <!-- ADDED: collision -->
+                  <geom class="cls_lleg" name="Left_Foot1" size ="0.015 0.09" pos="0.037 -0.02 -0.024" quat="0.707107 0 -0.707107 0" rgba="0 0 1 0.3" type="capsule" />
+                  <geom class="cls_lleg" name="Left_Foot2" size ="0.015 0.09" pos="0.037 +0.02 -0.024" quat="0.707107 0 -0.707107 0" rgba="0 0 1 0.3" type="capsule" />
                 </body>
               </body>
             </body>
@@ -165,9 +164,6 @@
                 <joint name="right_ankle_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.87267 0.5236" actuatorfrcrange="-50 50"/>
                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="right_ankle_pitch_link"/>
                 <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="right_ankle_pitch_link"/>
-                <!-- ADDED: collision -->
-                <geom class="cls_rleg" name="Right_Foot1" size ="0.015 0.09" pos="0.037 -0.02 -0.04" quat="0.707107 0 -0.707107 0" rgba="0 0 1 0.3" type="capsule" />
-                <geom class="cls_rleg" name="Right_Foot2" size ="0.015 0.09" pos="0.037 +0.02 -0.04" quat="0.707107 0 -0.707107 0" rgba="0 0 1 0.3" type="capsule" />
                 <body name="right_ankle_roll_link" pos="0 0 -0.017558">
                   <inertial pos="0.026505 0 -0.016425" quat="0.000481092 0.728482 0.000618967 0.685065" mass="0.608" diaginertia="0.00167218 0.0016161 0.000217621"/>
                   <joint name="right_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.2618 0.2618" actuatorfrcrange="-50 50"/>
@@ -177,6 +173,9 @@
                   <geom size="0.005" pos="0.12 0.03 -0.03" rgba="0.2 0.2 0.2 1"/>
                   <geom size="0.005" pos="0.12 -0.03 -0.03" rgba="0.2 0.2 0.2 1"/>
                   <body name="right_toe_link" pos="0.1 0 -0.02"/>
+                  <!-- ADDED: collision -->
+                  <geom class="cls_rleg" name="Right_Foot1" size ="0.015 0.09" pos="0.037 -0.02 -0.024" quat="0.707107 0 -0.707107 0" rgba="0 0 1 0.3" type="capsule" />
+                  <geom class="cls_rleg" name="Right_Foot2" size ="0.015 0.09" pos="0.037 +0.02 -0.024" quat="0.707107 0 -0.707107 0" rgba="0 0 1 0.3" type="capsule" />
                 </body>
               </body>
             </body>

@@ -181,7 +181,7 @@
       </body>
       <body name="pelvis_link_cover_1">
         <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
-        <!-- <geom class="visual_geom" type="mesh" material="black" mesh="pelvis_link_cover_1"/> -->
+        <geom class="visual_geom" type="mesh" material="black" mesh="pelvis_link_cover_1"/>
       </body>
 
       <!-- LEFT LEG -->
@@ -195,7 +195,7 @@
           <geom class="visual_geom" type="mesh" material="black" mesh="left_hip_roll_link"/>
           <body name="left_hip_roll_link_cover">
             <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
-            <!-- <geom class="visual_geom" type="mesh" material="space_gray" mesh="left_hip_roll_link_cover"/> -->
+            <geom class="visual_geom" type="mesh" material="space_gray" mesh="left_hip_roll_link_cover"/>
           </body>
           <body name="left_hip_pitch_link" pos="0.0932 0 0" quat="0.923879 0 -0.382684 0">
             <inertial pos="0.000979 0.006906 -0.13909" quat="0.71893 0.0256683 0.00799493 0.694562" mass="5.485" diaginertia="0.0419282 0.0405238 0.0155601"/>
@@ -243,7 +243,7 @@
 
                     <body name="left_toe_pitch_link_cover">
                       <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
-                      <!-- <geom class="visual_geom" type="mesh" material="space_gray" mesh="left_toe_pitch_link_cover"/> -->
+                      <geom class="visual_geom" type="mesh" material="space_gray" mesh="left_toe_pitch_link_cover"/>
                     </body>
                   </body>
                 </body>
@@ -307,7 +307,7 @@
                     <geom name="Right_Foot2" class="collision_geom" size="0.036 0.11" pos="-0.045 -0.022 0.0" quat="0.707107 0 0.707107 0" type="capsule"/>
                     <body name="right_toe_pitch_link_cover">
                       <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
-                      <!-- <geom class="visual_geom" type="mesh" material="space_gray" mesh="right_toe_pitch_link_cover"/> -->
+                      <geom class="visual_geom" type="mesh" material="space_gray" mesh="right_toe_pitch_link_cover"/>
                     </body>
                   </body>
                 </body>
