@@ -53,10 +53,10 @@ from loop_rate_limiters import RateLimiter
 from rich import print
 from tqdm import tqdm
 
-from collision_free_motion_retargeting import (
+from general_motion_retargeting import (
     ROBOT_XML_DICT, ROBOT_BASE_DICT, IK_CONFIG_DICT, saturate_root_xy)
-from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file
-from collision_free_motion_retargeting.utils.lafan_vendor.extract import read_bvh
+from general_motion_retargeting.utils.lafan1 import load_bvh_file
+from general_motion_retargeting.utils.lafan_vendor.extract import read_bvh
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

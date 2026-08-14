@@ -1,8 +1,8 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-import collision_free_motion_retargeting.utils.lafan_vendor.utils as utils
-from collision_free_motion_retargeting.utils.lafan_vendor.extract import read_bvh
+import general_motion_retargeting.utils.lafan_vendor.utils as utils
+from general_motion_retargeting.utils.lafan_vendor.extract import read_bvh
 
 
 def load_bvh_file(bvh_file, format="lafan1"):

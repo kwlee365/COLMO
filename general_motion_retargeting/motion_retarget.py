@@ -13,7 +13,7 @@ from mink.solve_ik import _compute_qp_objective, _compute_qp_inequalities
 import daqp
 from ctypes import c_int
 
-# Supported collision-avoidance modes for CollisionFreeMotionRetargeting:
+# Supported collision-avoidance modes for GeneralMotionRetargeting:
 #   "cbf"  : hard QP inequality CBF (mink.CollisionAvoidanceLimit) added to the IK limits.
 #   "issf" : hard QP inequality with the ISSf-CBF robustness margin
 #            (ISSfCollisionAvoidanceLimit); a robustified variant of "cbf".
@@ -422,7 +422,7 @@ class VelocityLimitAllDof(mink.Limit):
         return mink.Constraint(G=G, h=np.hstack([h, h]))
 
 
-class CollisionFreeMotionRetargeting:
+class GeneralMotionRetargeting:
     """Collision-Free Motion Retargeting (COLMO).
     """
     def __init__(

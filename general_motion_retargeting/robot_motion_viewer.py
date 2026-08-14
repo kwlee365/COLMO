@@ -4,7 +4,7 @@ import mujoco as mj
 import mujoco.viewer as mjv
 import imageio
 from scipy.spatial.transform import Rotation as R
-from collision_free_motion_retargeting import ROBOT_XML_DICT, ROBOT_BASE_DICT, VIEWER_CAM_DISTANCE_DICT
+from general_motion_retargeting import ROBOT_XML_DICT, ROBOT_BASE_DICT, VIEWER_CAM_DISTANCE_DICT
 from loop_rate_limiters import RateLimiter
 import numpy as np
 from rich import print

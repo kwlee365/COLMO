@@ -241,14 +241,14 @@ pip install PyQt6 PyQt6-Qt6 PyQt6-sip
 
 
 ```bash
-python collision_free_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
+python general_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
   --bvh_file <path_to_dir_of_bvh_data> \
   --scale <displacement scaling size> \
   --reset_to_zero
 ```
 like
 ```bash
-python collision_free_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
+python general_motion_retargeting/utils/xsens_vendor/mujoco_xsens_bvh_view.py \
   --scale 0.01 \
   --bvh_file assets/xsens_bvh_test/251021_04_boxing_120Hz_cm_3DsMax.bvh \
   --reset_to_zero
@@ -457,10 +457,10 @@ external teleop stack (e.g. [this script from TWIST2](https://github.com/amazon-
 can drive the retargeter directly:
 
 ```python
-from collision_free_motion_retargeting import CollisionFreeMotionRetargeting, XRobotStreamer
+from general_motion_retargeting import GeneralMotionRetargeting, XRobotStreamer
 
 streamer = XRobotStreamer()
-retargeter = CollisionFreeMotionRetargeting(src_human="xrobot", tgt_robot="unitree_g1")
+retargeter = GeneralMotionRetargeting(src_human="xrobot", tgt_robot="unitree_g1")
 qpos = retargeter.retarget(streamer.get_processed_body_data())
 ```
 
@@ -471,7 +471,7 @@ still `import general_motion_retargeting` — TWIST2's
 `deploy_real/xrobot_teleop_to_robot_w_hand.py` is the usual one. The
 [general_motion_retargeting/](general_motion_retargeting/) package in this repo is a
 compatibility shim that makes those imports resolve to COLMO unchanged: every
-`general_motion_retargeting.X` module aliases to `collision_free_motion_retargeting.X`,
+`general_motion_retargeting.X` module aliases to `general_motion_retargeting.X`,
 and `GeneralMotionRetargeting` is a subclass restoring GMR's
 `retarget(human_data, offset_to_ground=...)` signature. No edits to TWIST2 are needed.
 

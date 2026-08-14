@@ -17,17 +17,17 @@ conda install -c conda-forge libstdcxx-ng -y
 
 ### Core Components
 
-- **`CollisionFreeMotionRetargeting`** (`collision_free_motion_retargeting/motion_retarget.py`): Main class for motion retargeting using inverse kinematics (IK) solver built on mink/mujoco
-- **`KinematicsModel`** (`collision_free_motion_retargeting/kinematics_model.py`): Handles robot kinematics calculations
-- **`RobotMotionViewer`** (`collision_free_motion_retargeting/robot_motion_viewer.py`): MuJoCo-based visualization for robot motions
-- **Configuration System** (`collision_free_motion_retargeting/params.py`): Simplified robot definitions and IK config mappings - cleaned to focus on core supported robots
+- **`GeneralMotionRetargeting`** (`general_motion_retargeting/motion_retarget.py`): Main class for motion retargeting using inverse kinematics (IK) solver built on mink/mujoco
+- **`KinematicsModel`** (`general_motion_retargeting/kinematics_model.py`): Handles robot kinematics calculations
+- **`RobotMotionViewer`** (`general_motion_retargeting/robot_motion_viewer.py`): MuJoCo-based visualization for robot motions
+- **Configuration System** (`general_motion_retargeting/params.py`): Simplified robot definitions and IK config mappings - cleaned to focus on core supported robots
 
 ### Data Flow
 
 1. **Human Motion Input**: SMPL-X (AMASS/OMOMO) or BVH (LAFAN1) format
 2. **Motion Format**: Each frame = dict of (human_body_name, 3D translation + rotation)
 3. **Robot Output**: Tuple of (base_translation, base_rotation, joint_positions)
-4. **IK Configs**: JSON files in `collision_free_motion_retargeting/ik_configs/` define human-to-robot body mappings
+4. **IK Configs**: JSON files in `general_motion_retargeting/ik_configs/` define human-to-robot body mappings
 
 ### Supported Robots
 
@@ -84,18 +84,18 @@ loop rate.
 ## File Organization
 
 - `scripts/`: Entry point scripts for different retargeting workflows
-- `collision_free_motion_retargeting/`: Core library code
+- `general_motion_retargeting/`: Core library code
 - `assets/`: Robot models (MuJoCo XML) and body models (SMPL-X)
-- `collision_free_motion_retargeting/ik_configs/`: JSON configuration files for human-to-robot body mappings:
+- `general_motion_retargeting/ik_configs/`: JSON configuration files for human-to-robot body mappings:
   - SMPL-X configs: `smplx_to_{g1,h1}.json`
   - BVH configs: `bvh_lafan1_to_g1.json`, `bvh_{nokov,xsens}_to_g1.json`
   - FBX configs: `fbx_offline_to_g1.json` (offline), `fbx_to_g1.json` (OptiTrack live)
   - Teleop configs: `xrobot_to_g1.json` (PICO), `xsens_mvn_to_g1.json` (Xsens MVN live)
-- `collision_free_motion_retargeting/optitrack_vendor/`: vendored NatNet client for OptiTrack streaming
-- `collision_free_motion_retargeting/xrobot_utils.py`: PICO / XRoboToolkit streamer + recorder
+- `general_motion_retargeting/optitrack_vendor/`: vendored NatNet client for OptiTrack streaming
+- `general_motion_retargeting/xrobot_utils.py`: PICO / XRoboToolkit streamer + recorder
 - `general_motion_retargeting/`: **compatibility shim only** — aliases GMR's old package/class
   names onto COLMO so upstream GMR code (TWIST2) imports unchanged. Never put real logic here;
-  new code imports `collision_free_motion_retargeting` directly.
+  new code imports `general_motion_retargeting` directly.
 
 ## Project Status & Features
 

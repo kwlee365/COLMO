@@ -33,8 +33,8 @@ import mujoco as mj
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE))
 import eval_kinematic as ek  # noqa: E402  (reuse real-mesh collision machinery)
-from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO  # noqa: E402
-from collision_free_motion_retargeting.utils.lafan1 import load_bvh_file  # noqa: E402
+from general_motion_retargeting import GeneralMotionRetargeting as COLMO  # noqa: E402
+from general_motion_retargeting.utils.lafan1 import load_bvh_file  # noqa: E402
 
 # 10 collision-relevant + baseline motions: locomotion (walk/run), self-collision-prone
 # (fight / dance / multipleActions), and ground-contact (ground / fall / pushAndFall).

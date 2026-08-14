@@ -1,4 +1,4 @@
-from collision_free_motion_retargeting import RobotMotionViewer, load_robot_motion
+from general_motion_retargeting import RobotMotionViewer, load_robot_motion
 import argparse
 import os
 import sys

@@ -70,13 +70,13 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 # rather than through the package __init__ that would drag torch back in.
 def _robot_tables():
     """(ROBOT_XML_DICT, ROBOT_BASE_DICT, IK_CONFIG_DICT), cheaply."""
-    params_py = REPO_ROOT / "collision_free_motion_retargeting" / "params.py"
+    params_py = REPO_ROOT / "general_motion_retargeting" / "params.py"
     try:
         spec = importlib.util.spec_from_file_location("_colmo_params", params_py)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
     except Exception:                        # params grew package-relative imports
-        import collision_free_motion_retargeting as mod
+        import general_motion_retargeting as mod
     return mod.ROBOT_XML_DICT, mod.ROBOT_BASE_DICT, mod.IK_CONFIG_DICT
 
 
@@ -308,8 +308,8 @@ def bundle_cache_path(args, smplx_path):
 def build_bundle(args, smplx_path, solve_to):
     """Load SMPL-X, build the skin asset, and solve the IK for frames [0, solve_to)."""
     import torch
-    from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
-    from collision_free_motion_retargeting.utils.smpl import (
+    from general_motion_retargeting import GeneralMotionRetargeting as COLMO
+    from general_motion_retargeting.utils.smpl import (
         load_smplx_file, get_smplx_data_offline_fast, JOINT_NAMES)
 
     if args.torch_threads > 0:

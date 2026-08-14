@@ -34,7 +34,7 @@ def get_robot_n_dof(robot: str) -> int:
     for a registered robot, by loading its MuJoCo model."""
     import mujoco
 
-    from collision_free_motion_retargeting.params import ROBOT_XML_DICT
+    from general_motion_retargeting.params import ROBOT_XML_DICT
 
     if robot not in ROBOT_XML_DICT:
         raise ValueError(

@@ -24,13 +24,13 @@ from loop_rate_limiters import RateLimiter
 from rich import print
 from tqdm import tqdm
 
-from collision_free_motion_retargeting import (
-    CollisionFreeMotionRetargeting as COLMO,
+from general_motion_retargeting import (
+    GeneralMotionRetargeting as COLMO,
     ROBOT_XML_DICT,
     ROBOT_BASE_DICT,
     VIEWER_CAM_DISTANCE_DICT,
 )
-from collision_free_motion_retargeting.utils.smpl import (
+from general_motion_retargeting.utils.smpl import (
     load_smplx_file,
     get_smplx_data_offline_fast,
     JOINT_NAMES,

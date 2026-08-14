@@ -23,8 +23,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from smplx.joint_names import JOINT_NAMES
 
-from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
-from collision_free_motion_retargeting import RobotMotionViewer
+from general_motion_retargeting import GeneralMotionRetargeting as COLMO
+from general_motion_retargeting import RobotMotionViewer
 
 from rich import print
 

@@ -22,7 +22,7 @@ import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster, leaves_list
 from scipy.spatial.transform import Rotation as R
 
-from collision_free_motion_retargeting.params import ROBOT_XML_DICT
+from general_motion_retargeting.params import ROBOT_XML_DICT
 
 
 class _NumpyCompatUnpickler(pickle.Unpickler):

@@ -13,10 +13,10 @@ from rich import print
 import torch
 import pickle
 
-from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
-from collision_free_motion_retargeting.utils.smpl import load_smplx_file, get_smplx_data_offline_fast
-from collision_free_motion_retargeting.kinematics_model import KinematicsModel
-from collision_free_motion_retargeting import IK_CONFIG_ROOT
+from general_motion_retargeting import GeneralMotionRetargeting as COLMO
+from general_motion_retargeting.utils.smpl import load_smplx_file, get_smplx_data_offline_fast
+from general_motion_retargeting.kinematics_model import KinematicsModel
+from general_motion_retargeting import IK_CONFIG_ROOT
 import gc
 import time
 import psutil

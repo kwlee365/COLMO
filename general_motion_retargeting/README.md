@@ -1,4 +1,4 @@
-# `collision_free_motion_retargeting/` — Core Library
+# `general_motion_retargeting/` — Core Library
 
 Core Python package for retargeting human motion (BVH / SMPL-X / FBX-offline) onto
 the Unitree **G1** and **H1** humanoids.
@@ -8,7 +8,7 @@ the Unitree **G1** and **H1** humanoids.
 ```
 human motion file
   → format loader (utils/*)  →  per-frame dict {body_name: (position, quaternion)}
-  → CollisionFreeMotionRetargeting.retarget()  (mink IK QP)
+  → GeneralMotionRetargeting.retarget()  (mink IK QP)
   → robot qpos  →  viewer / saved .pkl
 ```
 
@@ -16,9 +16,9 @@ human motion file
 
 | File | Role |
 |------|------|
-| `motion_retarget.py` | **Heart of the pipeline.** `CollisionFreeMotionRetargeting.retarget()` scales/offsets each human frame, sets mink `FrameTask` targets, and solves a 2-stage (table1/table2) IK QP to produce robot `qpos`. Includes CBF / ISSf self-collision avoidance (hard QP inequalities), a **soft** per-frame acceleration limit (DAQP `sense=8`), and a foot-contact zero-velocity limit. Reads runtime params from `assets/<robot>/collision_cfg.yaml`. |
+| `motion_retarget.py` | **Heart of the pipeline.** `GeneralMotionRetargeting.retarget()` scales/offsets each human frame, sets mink `FrameTask` targets, and solves a 2-stage (table1/table2) IK QP to produce robot `qpos`. Includes CBF / ISSf self-collision avoidance (hard QP inequalities), a **soft** per-frame acceleration limit (DAQP `sense=8`), and a foot-contact zero-velocity limit. Reads runtime params from `assets/<robot>/collision_cfg.yaml`. |
 | `params.py` | Registry constants: robot MuJoCo XML paths (`ROBOT_XML_DICT`), input-source × robot IK-config JSON map (`IK_CONFIG_DICT`), robot base body names (`ROBOT_BASE_DICT`), viewer camera distances (`VIEWER_CAM_DISTANCE_DICT`). Offline sources: `smplx`, `bvh_lafan1`, `bvh_nokov`, `bvh_xsens`, `fbx_offline`. Real-time teleop sources (g1 only): `fbx` (OptiTrack), `xrobot` (PICO), `xsens_mvn`. |
-| `__init__.py` | Public API. Re-exports the constants plus `CollisionFreeMotionRetargeting`, `RobotMotionViewer`, `draw_frame`, `load_robot_motion`, `KinematicsModel`, `human_head_to_robot_neck`, and (if `xrobotoolkit_sdk` is installed) `XRobotStreamer` / `XRobotRecorder`. |
+| `__init__.py` | Public API. Re-exports the constants plus `GeneralMotionRetargeting`, `RobotMotionViewer`, `draw_frame`, `load_robot_motion`, `KinematicsModel`, `human_head_to_robot_neck`, and (if `xrobotoolkit_sdk` is installed) `XRobotStreamer` / `XRobotRecorder`. |
 | `robot_motion_viewer.py` | MuJoCo passive-viewer visualization. `RobotMotionViewer.step()` sets robot qpos and renders, overlaying human coordinate frames (`draw_frame`) and foot-contact points; supports camera follow, fps rate-limiting, mp4 recording (imageio), and collision-geom toggling. |
 | `data_loader.py` | Reader for saved robot-motion pickles. `load_robot_motion()` unpacks fps / root_pos / root_rot / dof_pos and converts root_rot xyzw → wxyz (MuJoCo scalar-first). Consumed by the playback/vis scripts. |
 

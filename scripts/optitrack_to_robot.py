@@ -20,9 +20,9 @@ removed, so it is not a speedup. Re-measure on your own machine before tuning.
 import argparse
 import threading
 
-from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
-from collision_free_motion_retargeting import RobotMotionViewer
-from collision_free_motion_retargeting.optitrack_vendor.NatNetClient import setup_optitrack
+from general_motion_retargeting import GeneralMotionRetargeting as COLMO
+from general_motion_retargeting import RobotMotionViewer
+from general_motion_retargeting.optitrack_vendor.NatNetClient import setup_optitrack
 
 
 def str2bool(v):

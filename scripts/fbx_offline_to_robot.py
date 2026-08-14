@@ -1,8 +1,8 @@
 import argparse
 import pathlib
 import time
-from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
-from collision_free_motion_retargeting import RobotMotionViewer
+from general_motion_retargeting import GeneralMotionRetargeting as COLMO
+from general_motion_retargeting import RobotMotionViewer
 from rich import print
 from tqdm import tqdm
 import os

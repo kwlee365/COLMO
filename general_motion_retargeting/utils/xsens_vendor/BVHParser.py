@@ -366,7 +366,7 @@ class BVHParser:
     def bias_edit(self, rotations, positions):
         import sys
         from PyQt6.QtWidgets import QApplication
-        from collision_free_motion_retargeting.utils.xsens_vendor.bvh_edit.CurveEditor import (
+        from general_motion_retargeting.utils.xsens_vendor.bvh_edit.CurveEditor import (
             CurveEditorWindow,
         )
 

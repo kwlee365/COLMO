@@ -26,8 +26,8 @@ import time
 import numpy as np
 from rich import print
 
-from collision_free_motion_retargeting import CollisionFreeMotionRetargeting as COLMO
-from collision_free_motion_retargeting import RobotMotionViewer, XRobotStreamer
+from general_motion_retargeting import GeneralMotionRetargeting as COLMO
+from general_motion_retargeting import RobotMotionViewer, XRobotStreamer
 
 # Global flag for graceful shutdown
 g_running = True

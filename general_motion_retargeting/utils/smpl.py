@@ -5,7 +5,7 @@ from scipy.spatial.transform import Rotation as R
 from smplx.joint_names import JOINT_NAMES
 from scipy.interpolate import interp1d
 
-import collision_free_motion_retargeting.utils.lafan_vendor.utils as utils
+import general_motion_retargeting.utils.lafan_vendor.utils as utils
 
 
 def load_smpl_file(smpl_file):

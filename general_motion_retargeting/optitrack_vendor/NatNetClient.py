@@ -26,8 +26,8 @@ import struct
 from threading import Thread
 import copy
 import time
-import collision_free_motion_retargeting.optitrack_vendor.DataDescriptions as DataDescriptions
-import collision_free_motion_retargeting.optitrack_vendor.MoCapData as MoCapData
+import general_motion_retargeting.optitrack_vendor.DataDescriptions as DataDescriptions
+import general_motion_retargeting.optitrack_vendor.MoCapData as MoCapData
 from queue import Queue
 import numpy as np
 
