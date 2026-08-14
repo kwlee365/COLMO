@@ -58,6 +58,8 @@ assets/body_models/
 *.rar
 *.7z
 *.png
+# ...except images the README links to
+!assets/optitrack.png
 
 # Model files
 smplx/

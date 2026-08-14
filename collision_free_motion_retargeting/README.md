@@ -17,8 +17,8 @@ human motion file
 | File | Role |
 |------|------|
 | `motion_retarget.py` | **Heart of the pipeline.** `CollisionFreeMotionRetargeting.retarget()` scales/offsets each human frame, sets mink `FrameTask` targets, and solves a 2-stage (table1/table2) IK QP to produce robot `qpos`. Includes CBF / ISSf self-collision avoidance (hard QP inequalities), a **soft** per-frame acceleration limit (DAQP `sense=8`), and a foot-contact zero-velocity limit. Reads runtime params from `assets/<robot>/collision_cfg.yaml`. |
-| `params.py` | Registry constants: robot MuJoCo XML paths (`ROBOT_XML_DICT`), input-source × robot IK-config JSON map (`IK_CONFIG_DICT`), robot base body names (`ROBOT_BASE_DICT`), viewer camera distances (`VIEWER_CAM_DISTANCE_DICT`). Currently registers **g1** and **h1** only; sources: `smplx`, `bvh_lafan1`, `bvh_nokov`, `bvh_xsens`, `fbx_offline`. |
-| `__init__.py` | Public API. Re-exports the constants plus `CollisionFreeMotionRetargeting`, `RobotMotionViewer`, `draw_frame`, `load_robot_motion`, `KinematicsModel`. |
+| `params.py` | Registry constants: robot MuJoCo XML paths (`ROBOT_XML_DICT`), input-source × robot IK-config JSON map (`IK_CONFIG_DICT`), robot base body names (`ROBOT_BASE_DICT`), viewer camera distances (`VIEWER_CAM_DISTANCE_DICT`). Offline sources: `smplx`, `bvh_lafan1`, `bvh_nokov`, `bvh_xsens`, `fbx_offline`. Real-time teleop sources (g1 only): `fbx` (OptiTrack), `xrobot` (PICO), `xsens_mvn`. |
+| `__init__.py` | Public API. Re-exports the constants plus `CollisionFreeMotionRetargeting`, `RobotMotionViewer`, `draw_frame`, `load_robot_motion`, `KinematicsModel`, `human_head_to_robot_neck`, and (if `xrobotoolkit_sdk` is installed) `XRobotStreamer` / `XRobotRecorder`. |
 | `robot_motion_viewer.py` | MuJoCo passive-viewer visualization. `RobotMotionViewer.step()` sets robot qpos and renders, overlaying human coordinate frames (`draw_frame`) and foot-contact points; supports camera follow, fps rate-limiting, mp4 recording (imageio), and collision-geom toggling. |
 | `data_loader.py` | Reader for saved robot-motion pickles. `load_robot_motion()` unpacks fps / root_pos / root_rot / dof_pos and converts root_rot xyzw → wxyz (MuJoCo scalar-first). Consumed by the playback/vis scripts. |
 
@@ -28,7 +28,27 @@ human motion file
 |------|------|
 | `kinematics_model.py` | Pure-PyTorch (batched, differentiable) forward-kinematics model parsed directly from the robot MuJoCo XML. `forward_kinematics(root_pos, root_rot, dof_pos) → body_pos/body_rot`. **Not** part of the IK; used by the batch dataset scripts to compute `local_body_pos` for the saved pkl. |
 | `torch_utils.py` | IsaacGym-derived batched PyTorch quaternion ops (scalar-last / xyzw). Used by `kinematics_model.py`; mainly RL/post-processing helpers, not the core IK. |
-| `rot_utils.py` | NumPy/SciPy rotation helpers (scalar-first). **Currently unused** — its only caller was the (now removed) XR teleop module. |
+| `rot_utils.py` | NumPy/SciPy rotation helpers (scalar-first). `quat_mul_np` is used by `xrobot_utils.py` for the Unity→right-handed coordinate transform. |
+
+## Real-time teleoperation
+
+Live mocap sources. Each streams frames in the same `{body_name: (position, quaternion)}`
+format the offline loaders produce, so they feed `retarget()` unchanged.
+
+| File | Role |
+|------|------|
+| `xrobot_utils.py` | **PICO / XRoboToolkit.** `XRobotStreamer` pulls body-, hand-, controller- and headset-tracking from the `xrobotoolkit_sdk` bindings and converts Unity coordinates to right-handed. `XRobotRecorder` replays a recorded mp4 + tracking-txt pair with the same interface. Import is guarded: without the SDK the classes still import but constructing `XRobotStreamer` raises a clear `ImportError`. Driven by `scripts/xrobot_to_robot.py`. |
+| `neck_retarget.py` | `human_head_to_robot_neck()` — head-relative-to-spine rotation → (neck_yaw, neck_pitch) radians, for robots with an actuated neck. |
+| `optitrack_vendor/` | Vendored OptiTrack **NatNet** client (`NatNetClient.py` + `DataDescriptions.py` / `MoCapData.py`). `setup_optitrack()` builds a client; `get_frame()` pops one skeleton frame off the receive queue. Driven by `scripts/optitrack_to_robot.py`. |
+| `utils/xsens_vendor/xsens_to_colmo_adapter.py` | **Xsens MVN live.** `XsensToCOLMO` wraps the external `xsens_mvn_robot.XsensWrapper` UDP stream, maps Xsens link names to the IK-config body names, and applies yaw normalization. Driven by `scripts/xsens_live_streaming.py`. |
+
+Teleop constructs the retargeter exactly like the offline path, minus
+`adjust_hips_scale_for_motion()` (which needs the whole clip up front), so the plain
+scalar root scaling applies. The first `retarget()` call still runs the full
+`warmup_iters` settle + ground calibration; every call after that is one normal IK solve.
+Collision avoidance defaults to the offline `collision_mode` from
+`assets/<robot>/collision_cfg.yaml` — all three teleop scripts take `--collision_mode`
+to trade it away for loop rate.
 
 ## `utils/` — human-format loaders
 

@@ -4,3 +4,13 @@ from .motion_retarget import CollisionFreeMotionRetargeting, saturate_root_xy
 from .robot_motion_viewer import RobotMotionViewer, draw_frame
 from .data_loader import load_robot_motion
 from .kinematics_model import KinematicsModel
+
+# --- teleoperation (real-time) ---
+from .neck_retarget import human_head_to_robot_neck
+
+try:
+    from .xrobot_utils import XRobotStreamer, XRobotRecorder
+except ImportError:
+    print("XRobotStreamer is not installed. Please install xrobotoolkit_sdk to use this feature.")
+    XRobotStreamer = None
+    XRobotRecorder = None

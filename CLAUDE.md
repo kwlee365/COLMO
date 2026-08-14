@@ -65,6 +65,16 @@ python scripts/vis_robot_motion.py --robot <robot_name> --robot_motion_path <pat
 
 Add `--record_video --video_path <output.mp4>` to any visualization command to record video.
 
+### Teleoperation (live mocap → robot, `unitree_g1` only)
+```bash
+python scripts/optitrack_to_robot.py --server_ip <ip> --client_ip <ip> --use_multicast False
+python scripts/xrobot_to_robot.py --robot unitree_g1     # PICO / XRoboToolkit
+python scripts/xsens_live_streaming.py --port 9763       # Xsens MVN
+```
+
+All three accept `--collision_mode {issf, cbf, off}` to trade collision avoidance for
+loop rate.
+
 ## Key Technical Details
 
 - **IK Solver**: Uses mink library with configurable solver (default: "daqp") and damping (default: 5e-1)
@@ -79,7 +89,13 @@ Add `--record_video --video_path <output.mp4>` to any visualization command to r
 - `collision_free_motion_retargeting/ik_configs/`: JSON configuration files for human-to-robot body mappings:
   - SMPL-X configs: `smplx_to_{g1,h1}.json`
   - BVH configs: `bvh_lafan1_to_g1.json`, `bvh_{nokov,xsens}_to_g1.json`
-  - FBX configs: `fbx_offline_to_g1.json`
+  - FBX configs: `fbx_offline_to_g1.json` (offline), `fbx_to_g1.json` (OptiTrack live)
+  - Teleop configs: `xrobot_to_g1.json` (PICO), `xsens_mvn_to_g1.json` (Xsens MVN live)
+- `collision_free_motion_retargeting/optitrack_vendor/`: vendored NatNet client for OptiTrack streaming
+- `collision_free_motion_retargeting/xrobot_utils.py`: PICO / XRoboToolkit streamer + recorder
+- `general_motion_retargeting/`: **compatibility shim only** — aliases GMR's old package/class
+  names onto COLMO so upstream GMR code (TWIST2) imports unchanged. Never put real logic here;
+  new code imports `collision_free_motion_retargeting` directly.
 
 ## Project Status & Features
 
@@ -87,6 +103,7 @@ Add `--record_video --video_path <output.mp4>` to any visualization command to r
 
 **Key Capabilities**:
 - **Multi-format Input**: SMPL-X (AMASS/OMOMO), BVH (LAFAN1/Nokov/Xsens), FBX (offline)
+- **Live Teleop Input**: OptiTrack (NatNet), PICO / XRoboToolkit, Xsens MVN
 - **Robot Models**: Unitree G1 (29 DOF) and Unitree H1
 - **Robust IK**: Mink-based solver with automatic human height scaling
 - **Visualization**: MuJoCo-based viewer with video recording capabilities
@@ -94,6 +111,7 @@ Add `--record_video --video_path <output.mp4>` to any visualization command to r
 
 **Use Cases**:
 - Offline motion retargeting (BVH / SMPL-X / FBX files → robot)
+- Real-time whole-body teleoperation (OptiTrack / PICO / Xsens → robot)
 - RL policy training data generation
 - Motion capture to robot deployment
 - Cross-platform humanoid motion transfer

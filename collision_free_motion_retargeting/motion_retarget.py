@@ -127,20 +127,95 @@ class ISSfCollisionAvoidanceLimit(mink.CollisionAvoidanceLimit):
     For the first-power variant, drop the `** 2` on `np.linalg.norm(row)` below.
     """
 
-    def __init__(self, *args, issf_epsilon: float = 1.0, **kwargs):
+    def __init__(self, *args, issf_epsilon: float = 1.0,
+                 plane_vertex_rows: bool = True, **kwargs):
         super().__init__(*args, **kwargs)
         self.issf_epsilon = float(issf_epsilon)
+        self.plane_vertex_rows = bool(plane_vertex_rows)
+        self._plane_rows = self._build_plane_rows() if self.plane_vertex_rows else []
+        # Pair ids covered by the support-point rows, both orderings, so the generic loop
+        # can skip them with an O(1) lookup (it runs on every QP solve of every frame).
+        self._plane_pair_ids = set()
+        for plane_id, robot_id, *_rest in self._plane_rows:
+            self._plane_pair_ids.add((plane_id, robot_id))
+            self._plane_pair_ids.add((robot_id, plane_id))
+        self._jacp = np.zeros((3, self.model.nv))
+
+    # ------------------------------------------------------------------
+    # Plane pairs: one smooth row per SUPPORT POINT instead of one row per pair.
+    #
+    # For a capsule against a plane the exact distance is
+    #     d(q) = min_i ( n^T (p_i(q) - p_plane) ) - r ,   i in {both axis endpoints}
+    # a MINIMUM of two smooth functions, so it has a kink wherever the two endpoints are
+    # level -- which for a foot in stance is the normal operating condition, not a corner
+    # case. mj_geomDistance reports whichever endpoint is currently lower and the CBF row
+    # linearizes only THAT branch; a step that crosses the kink then lands on the other
+    # branch, which the row knew nothing about. Measured on ground1_subject1: 98.6% of
+    # ground rows have a worst linearization error of 0.087 mm (pure curvature, negligible
+    # against the ISSf margin), while the 1.4% of rows that switch branch reach -5.00 mm,
+    # four times the margin -- and that 1.4% is where 100% of the ground penetration enters.
+    #
+    # Emitting one row per endpoint replaces min(z_a, z_b) >= r by the pair of SMOOTH
+    # constraints z_a >= r AND z_b >= r. Same feasible set, no kink, and each branch is
+    # already linear to ~0.09 mm. Cost: 20 capsules x 2 + 3 spheres x 1 = 43 rows in place
+    # of 23 for the unitree_g1 ground limit.
+    #
+    # A second consequence, deliberate: n^T(p_i - p_plane) is a SIGNED distance that stays
+    # smooth through zero, so no sign flip is needed and the -alpha*(d - d_min) term can be
+    # kept when penetrating (mink drops it, leaving `Jv <= 0` = "never recover"). Here a
+    # penetrating point is commanded to separate at a rate proportional to its depth.
+    # ------------------------------------------------------------------
+    def _build_plane_rows(self):
+        """Per plane-vs-primitive pair, the support points to constrain.
+
+        Returns a list of (plane_gid, robot_gid, body_id, local_offset, radius), with
+        `local_offset` in the ROBOT GEOM's frame (so the world point is
+        geom_xpos + geom_xmat @ local_offset). Capsules contribute both axis endpoints,
+        spheres their centre; any other primitive is left to the generic pair path.
+        """
+        model = self.model
+        rows = []
+        for geom1_id, geom2_id in self.geom_id_pairs:
+            t1 = model.geom_type[geom1_id]
+            t2 = model.geom_type[geom2_id]
+            if t1 == mj.mjtGeom.mjGEOM_PLANE:
+                plane_id, robot_id = geom1_id, geom2_id
+            elif t2 == mj.mjtGeom.mjGEOM_PLANE:
+                plane_id, robot_id = geom2_id, geom1_id
+            else:
+                continue
+            rtype = model.geom_type[robot_id]
+            radius = float(model.geom_size[robot_id][0])
+            body_id = int(model.geom_bodyid[robot_id])
+            if rtype == mj.mjtGeom.mjGEOM_CAPSULE:
+                half = float(model.geom_size[robot_id][1])
+                offsets = [np.array([0.0, 0.0, -half]), np.array([0.0, 0.0, half])]
+            elif rtype == mj.mjtGeom.mjGEOM_SPHERE:
+                offsets = [np.zeros(3)]
+            else:
+                continue                      # box/mesh: keep the generic pair row
+            for off in offsets:
+                rows.append((plane_id, robot_id, body_id, off, radius))
+        return rows
+
+    def _plane_handled(self, geom1_id, geom2_id):
+        """True when this pair is covered by the per-support-point rows above."""
+        return (geom1_id, geom2_id) in self._plane_pair_ids
 
     def compute_qp_inequalities(self, configuration, dt):
         model = self.model
         data = configuration.data
-        upper_bound = np.full((self.max_num_contacts,), np.inf)
-        coefficient_matrix = np.zeros((self.max_num_contacts, model.nv))
+        n_generic = self.max_num_contacts
+        n_plane = len(self._plane_rows)
+        upper_bound = np.full((n_generic + n_plane,), np.inf)
+        coefficient_matrix = np.zeros((n_generic + n_plane, model.nv))
         distmax = self.collision_detection_distance
         min_dist = self.minimum_distance_from_collisions
         cbf_gain = self.gain  # mink's CollisionAvoidanceLimit stores the gain kwarg here
         eps = self.issf_epsilon
         for idx, (geom1_id, geom2_id) in enumerate(self.geom_id_pairs):
+            if self._plane_rows and self._plane_handled(geom1_id, geom2_id):
+                continue                       # handled per support point below
             dist = mj.mj_geomDistance(model, data, geom1_id, geom2_id, distmax, self._fromto)
             if abs(dist - distmax) < 1e-12:
                 continue
@@ -157,6 +232,23 @@ class ISSfCollisionAvoidanceLimit(mink.CollisionAvoidanceLimit):
                 upper_bound[idx] = -issf_margin + self.bound_relaxation
             sign = -1.0 if dist >= 0 else 1.0
             coefficient_matrix[idx] = sign * row
+
+        # Support-point rows for the plane pairs (see _build_plane_rows).
+        for k, (plane_id, robot_id, body_id, local_off, radius) in enumerate(self._plane_rows):
+            R = data.geom_xmat[robot_id].reshape(3, 3)
+            point = data.geom_xpos[robot_id] + R @ local_off
+            normal = data.geom_xmat[plane_id].reshape(3, 3)[:, 2]   # plane +z is its normal
+            dist = float(normal @ (point - data.geom_xpos[plane_id])) - radius
+            if dist > distmax:
+                continue
+            mj.mj_jac(model, data, self._jacp, None, point, body_id)
+            row = normal @ self._jacp                                # d(dist)/dq, 1 x nv
+            issf_margin = np.linalg.norm(row) ** 2 / eps
+            # Signed and smooth through zero: one branch covers both cases, and keeping
+            # the cbf_gain term while penetrating gives a depth-proportional restoring rate.
+            upper_bound[n_generic + k] = (cbf_gain * (dist - min_dist)
+                                          - issf_margin + self.bound_relaxation)
+            coefficient_matrix[n_generic + k] = -row
         return mink.Constraint(G=coefficient_matrix, h=upper_bound)
 
 
@@ -526,6 +618,12 @@ class CollisionFreeMotionRetargeting:
         # ISSf robustness scale (eq. 45): margin = ||J_AB|| / issf_epsilon.
         # Larger epsilon -> milder margin (epsilon -> inf recovers the plain CBF).
         self.issf_epsilon = params.get('issf_epsilon', 50.0)
+        # Plane pairs: constrain each SUPPORT POINT (capsule endpoints / sphere centre)
+        # with its own smooth row instead of the single min-over-the-primitive row that
+        # mj_geomDistance yields. See ISSfCollisionAvoidanceLimit._build_plane_rows for why
+        # the min is the thing that lets the ground be penetrated. Set false to reproduce
+        # the older single-row behaviour.
+        self.plane_vertex_rows = bool(params.get('plane_vertex_rows', True))
 
         # Global defaults for the per-pair collision-limit parameters. Each entry in
         # collision_limits: may still override any of these; otherwise these apply.
@@ -710,14 +808,25 @@ class CollisionFreeMotionRetargeting:
                     minimum_distance_from_collisions=margin,
                     collision_detection_distance=detect_dist,
                     issf_epsilon=issf_eps,
+                    plane_vertex_rows=self.plane_vertex_rows,
                 )
             else:
-                limit_obj = mink.CollisionAvoidanceLimit(
+                # "cbf" mode is ISSf with an INFINITE epsilon: ||J||^2 / inf == 0 removes the
+                # robustness margin and nothing else, so the nominal CBF and every epsilon
+                # share one code path. Using mink's stock class here instead would silently
+                # change TWO things at once -- it also divides the bound by dt, which in the
+                # Delta-q QP space (see mink.build_ik) loosens the constraint by 1/dt = 1000x
+                # -- and an epsilon ablation cannot attribute its result if the eps=inf column
+                # is solved by a different constraint. The plane support-point rows apply here
+                # too, for the same reason.
+                limit_obj = ISSfCollisionAvoidanceLimit(
                     model=self.model,
                     geom_pairs=geom_pairs,
                     gain=cbf_gain,
                     minimum_distance_from_collisions=margin,
                     collision_detection_distance=detect_dist,
+                    issf_epsilon=float('inf'),
+                    plane_vertex_rows=self.plane_vertex_rows,
                 )
             self.all_collision_limits.append(limit_obj)
 

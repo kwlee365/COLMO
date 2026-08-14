@@ -25,6 +25,16 @@ parameters:
   ground_calib_warmup_iter : 200
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
+  # Plane pairs (ground_collision below): one smooth row per SUPPORT POINT (both axis
+  # endpoints of a capsule, the centre of a sphere) instead of the single row
+  # mj_geomDistance yields for the currently-closest point. The exact capsule-plane
+  # distance min(z_a, z_b) - r kinks wherever the two endpoints are level -- a foot in
+  # stance -- and the CBF linearizes only the reported branch, so a step across the kink
+  # lands on the other one and drives it through the floor. Splitting the min into
+  # "z_a >= r AND z_b >= r" is the same feasible set without the kink, so it costs no
+  # tracking accuracy. See assets/unitree_g1/collision_cfg.yaml for the measured numbers.
+  # false restores the single-row behaviour (16 rows instead of 32 for this robot).
+  plane_vertex_rows : true
 
   # Enable flags for the three IK limits (a constructor arg, if passed, overrides these).
   use_velocity_limit : true       # FrameVelocityLimit (real per-frame velocity, frame_velocity_limit)

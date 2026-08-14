@@ -33,6 +33,21 @@ parameters:
   ground_calib_warmup_iter : 200
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
+  # Plane pairs (ground_collision below): give every SUPPORT POINT its own smooth row --
+  # both axis endpoints of a capsule, the centre of a sphere -- instead of the single row
+  # mj_geomDistance yields for the currently-closest point.
+  #   The exact capsule-plane distance is min(z_a, z_b) - r, a MINIMUM of two smooth
+  #   functions, so it kinks wherever the two endpoints are level -- which for a foot in
+  #   stance is the normal operating condition. The CBF linearizes only the reported
+  #   branch, and a step across the kink lands on the other one: measured on
+  #   ground1_subject1, 98.6% of ground rows linearize to within 0.087 mm while the 1.4%
+  #   that switch branch reach -5.00 mm, four times the ISSf margin -- and that 1.4% is
+  #   where 100% of the ground penetration enters. Splitting the min into "z_a >= r AND
+  #   z_b >= r" is the SAME feasible set with no kink, so it costs no tracking accuracy.
+  #   With it, ground penetration is 0.00% across all 60 LAFAN1 motions even at the plain
+  #   CBF (no robustness margin at all); without it, all 60 motions penetrate.
+  # false restores the single-row behaviour (23 rows instead of 43 for this robot).
+  plane_vertex_rows : true
 
   # Enable flags for the three IK limits (a constructor arg, if passed, overrides these).
   use_velocity_limit : true       # FrameVelocityLimit (real per-frame velocity, frame_velocity_limit)

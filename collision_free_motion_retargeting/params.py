@@ -43,6 +43,20 @@ IK_CONFIG_DICT = {
     "fbx_offline":{
         "unitree_g1": IK_CONFIG_ROOT / "fbx_offline_to_g1.json",
     },
+
+    # real-time teleoperation sources
+    # OptiTrack / Motive live streaming (NatNet), see scripts/optitrack_to_robot.py
+    "fbx":{
+        "unitree_g1": IK_CONFIG_ROOT / "fbx_to_g1.json",
+    },
+    # PICO / XRoboToolkit body tracking, see scripts/xrobot_to_robot.py
+    "xrobot":{
+        "unitree_g1": IK_CONFIG_ROOT / "xrobot_to_g1.json",
+    },
+    # Xsens MVN live streaming, see scripts/xsens_live_streaming.py
+    "xsens_mvn":{
+        "unitree_g1": IK_CONFIG_ROOT / "xsens_mvn_to_g1.json",
+    },
 }
 
 

@@ -20,6 +20,19 @@ Common flags: `--robot {unitree_g1, unitree_h1}`, `--collision_mode {cbf, issf, 
 | `fbx_offline_to_robot.py` | Retarget an offline OptiTrack FBX (pickled frames) + ground alignment. |
 | `xsens_bvh_to_robot.py` | Retarget an Xsens (3DSM) BVH motion (needs the `xsens_vendor` subsystem). |
 
+## Teleoperation (live mocap → robot)
+
+Real-time streaming. All three open a MuJoCo window and retarget every incoming frame;
+`unitree_g1` only, since that is the only robot with live-source IK configs. Collision
+avoidance defaults to `collision_cfg.yaml`; pass `--collision_mode off` if the loop
+cannot keep up with the mocap rate.
+
+| Script | Role |
+|--------|------|
+| `optitrack_to_robot.py` | **OptiTrack / Motive** over NatNet. Needs `--server_ip` (the Motive machine) and `--client_ip` (this machine); firewalls off on both. Source `fbx`. |
+| `xrobot_to_robot.py` | **PICO / XRoboToolkit** body tracking (TWIST2-style). Needs `xrobotoolkit-pc-service` running and the `xrobotoolkit_sdk` bindings installed. Source `xrobot`. |
+| `xsens_live_streaming.py` | **Xsens MVN** UDP network stream (`--port`, default 9763). Needs the external `xsens_mvn_robot` package. Source `xsens_mvn`. |
+
 ## Visualization
 
 | Script | Role |

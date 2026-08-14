@@ -406,6 +406,114 @@ python scripts/optitrack_to_robot.py --server_ip <server_ip> --client_ip <client
 
 You should see the visualization of the retargeted robot motion in a mujoco window.
 
+### PICO Streaming to Robot (TWIST2)
+
+Install PICO SDK:
+1. On your PICO, install PICO SDK: see [here](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/releases/).
+2. On your own PC,
+    - Download [deb package for ubuntu 22.04](https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0/XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb), or build from the [repo source](https://github.com/XR-Robotics/XRoboToolkit-PC-Service).
+    - To install, use command
+        ```bash
+        sudo dpkg -i XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
+        ```
+        then you should see `xrobotoolkit-pc-service` in your APPs. Remember to start this app before you do teleoperation.
+    - Build PICO PC Service SDK and Python SDK for PICO streaming:
+        ```bash
+        conda activate colmo
+
+        git clone https://github.com/YanjieZe/XRoboToolkit-PC-Service-Pybind.git
+        cd XRoboToolkit-PC-Service-Pybind
+
+        mkdir -p tmp
+        cd tmp
+        git clone https://github.com/XR-Robotics/XRoboToolkit-PC-Service.git
+        cd XRoboToolkit-PC-Service/RoboticsService/PXREARobotSDK
+        bash build.sh
+        cd ../../../..
+
+        mkdir -p lib
+        mkdir -p include
+        cp tmp/XRoboToolkit-PC-Service/RoboticsService/PXREARobotSDK/PXREARobotSDK.h include/
+        cp -r tmp/XRoboToolkit-PC-Service/RoboticsService/PXREARobotSDK/nlohmann include/nlohmann/
+        cp tmp/XRoboToolkit-PC-Service/RoboticsService/PXREARobotSDK/build/libPXREARobotSDK.so lib/
+        # rm -rf tmp
+
+        # Build the project
+        conda install -c conda-forge pybind11
+        pip uninstall -y xrobotoolkit_sdk
+        python setup.py install
+        ```
+
+You should be all set! With `xrobotoolkit-pc-service` running and the headset streaming, run:
+
+```bash
+python scripts/xrobot_to_robot.py --robot unitree_g1
+```
+
+You should be able to see the retargeted robot motion in a mujoco window.
+
+The `XRobotStreamer` / `XRobotRecorder` classes are also exported from the package, so an
+external teleop stack (e.g. [this script from TWIST2](https://github.com/amazon-far/TWIST2/blob/master/teleop.sh))
+can drive the retargeter directly:
+
+```python
+from collision_free_motion_retargeting import CollisionFreeMotionRetargeting, XRobotStreamer
+
+streamer = XRobotStreamer()
+retargeter = CollisionFreeMotionRetargeting(src_human="xrobot", tgt_robot="unitree_g1")
+qpos = retargeter.retarget(streamer.get_processed_body_data())
+```
+
+#### Running upstream GMR code (TWIST2) against COLMO
+
+COLMO renamed GMR's package and retargeter class, which breaks downstream projects that
+still `import general_motion_retargeting` — TWIST2's
+`deploy_real/xrobot_teleop_to_robot_w_hand.py` is the usual one. The
+[general_motion_retargeting/](general_motion_retargeting/) package in this repo is a
+compatibility shim that makes those imports resolve to COLMO unchanged: every
+`general_motion_retargeting.X` module aliases to `collision_free_motion_retargeting.X`,
+and `GeneralMotionRetargeting` is a subclass restoring GMR's
+`retarget(human_data, offset_to_ground=...)` signature. No edits to TWIST2 are needed.
+
+```bash
+pip install -e .     # re-run after pulling, so the shim package is registered
+```
+
+Two caveats: `--robot unitree_g1_with_hands` will raise `KeyError` because COLMO's trim
+removed that model (use `unitree_g1`), and GMR constructor kwargs COLMO reads from
+`collision_cfg.yaml` instead (`solver`, `damping`, `max_iter`, ...) are accepted but
+ignored, with a printed note.
+
+### Teleoperation performance and behaviour
+
+**Loop rate.** Unlike GMR, COLMO adds collision-avoidance inequalities to the IK QP every
+iteration. The mode is read from `assets/<robot>/collision_cfg.yaml` (`issf` by default)
+and all three teleop scripts accept `--collision_mode {issf, cbf, off}`. In practice the
+defaults are fast enough: measured on unitree_g1 with moving frames on a desktop CPU, the
+stock config runs **~8.8 ms/frame (~110 Hz)**, above any mocap rate. If a slower machine
+falls behind, use `--max_iter` (also exposed on all three scripts, so you do not have to
+edit the `collision_cfg.yaml` the offline pipeline shares). Both levers are modest here:
+`--max_iter 3` gained ~7%, and disabling collision avoidance *and* the soft
+velocity/acceleration/step limits reached ~6.2 ms (~160 Hz). `cbf` is the same constraint
+class as `issf` with the robustness margin removed, so it is **not** a speedup. Re-measure
+on your own machine before tuning.
+
+**Startup.** The first `retarget()` call runs the full `warmup_iters` (500) settle, a
+one-time pause of roughly a quarter second. The performer should hold a neutral standing
+pose while it happens.
+
+**No ground calibration on the live paths.** The frame-0 foot-height auto-calibration is
+gated on `ground_anchor_bodies`, which the three live IK configs (`fbx_to_g1.json`,
+`xrobot_to_g1.json`, `xsens_mvn_to_g1.json`) do not define — unlike `smplx_to_g1.json` and
+`bvh_lafan1_to_g1.json`. Live foot height is therefore whatever the scaled root position
+produces, so expect the robot to float or sink a little. Add
+`"ground_anchor_bodies": ["left_ankle_roll_link", "right_ankle_roll_link"]` to the live
+config to enable it.
+
+**No root speed cap on the live paths.** `max_base_horizontal_speed` is enforced inside
+`adjust_hips_scale_for_motion()`, which needs the whole clip up front and so is never
+called on a stream. The live root is uncapped.
+
 ### Visualize saved robot motion
 
 Visualize a single motions:
