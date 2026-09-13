@@ -33,6 +33,8 @@ def process_one_bvh(
     max_frames: int,
     device: str = "cuda:0",
     collision_mode: str = None,
+    max_base_horizontal_speed: float = None,
+    ik_config: str = None,
 ):
     # Load BVH
     lafan1_data_frames, actual_human_height = load_lafan1_file(bvh_file_path)
@@ -55,8 +57,15 @@ def process_one_bvh(
         tgt_robot=robot,
         actual_human_height=actual_human_height,
         collision_mode=collision_mode,
+        ik_config=ik_config,
     )
     # Per-motion base horizontal-speed cap (collision_cfg max_base_horizontal_speed).
+    # A CLI override replaces the YAML value; <= 0 disables the cap entirely (the
+    # "no saturation" arm of the ablation). It MUST be applied before
+    # adjust_hips_scale_for_motion, which is what bakes the cap into the root trajectory.
+    if max_base_horizontal_speed is not None:
+        retarget.max_base_horizontal_speed = (
+            None if max_base_horizontal_speed <= 0 else float(max_base_horizontal_speed))
     retarget.adjust_hips_scale_for_motion(lafan1_data_frames)
 
     # Retarget per frame
@@ -172,10 +181,44 @@ if __name__ == "__main__":
                              "(ISSfCollisionAvoidanceLimit); off. Unset -> YAML "
                              "parameters.collision_mode or 'issf'.")
 
+    parser.add_argument("--max_base_horizontal_speed", type=float, default=None,
+                        metavar="M_PER_S",
+                        help="Override collision_cfg.yaml parameters.max_base_horizontal_speed "
+                             "[m/s] for this run, e.g. 2.0. Unset keeps the YAML value "
+                             "(unitree_g1 3.0, kapex 1.0). To turn the cap OFF use "
+                             "--no_speed_cap, not a value of 0. Overriding here instead of "
+                             "editing the YAML keeps a concurrently running retarget "
+                             "unaffected: the YAML is re-read for every motion, this flag "
+                             "is not.")
+    parser.add_argument("--ik_config", type=str, default=None, metavar="JSON",
+                        help="Path to an IK-config JSON that overrides the built-in "
+                             "IK_CONFIG_DICT entry for (bvh_lafan1, --robot). Used for "
+                             "key-body ablations, e.g. the shoulder-yaw variant. The robot "
+                             "model and assets/<robot>/collision_cfg.yaml are still taken "
+                             "from --robot, so the variant JSON must target the same robot.")
+    parser.add_argument("--no_speed_cap", action="store_true",
+                        help="Disable the base horizontal-speed saturation entirely -- the "
+                             "'no saturation' arm of the cap ablation. The root then follows "
+                             "the nominally scaled human trajectory at full speed. Mutually "
+                             "exclusive with a positive --max_base_horizontal_speed.")
+
     args = parser.parse_args()
 
     if (args.bvh_file is None) == (args.src_folder is None):
         raise ValueError("Provide exactly one of --bvh_file or --src_folder")
+
+    # Resolve the two cap flags into the single value process_one_bvh takes:
+    #   None -> keep the YAML value,  <= 0 -> cap disabled,  > 0 -> that cap [m/s].
+    speed_cap = args.max_base_horizontal_speed
+    if args.no_speed_cap:
+        if speed_cap is not None and speed_cap > 0:
+            raise ValueError(
+                f"--no_speed_cap conflicts with --max_base_horizontal_speed {speed_cap}: "
+                f"pass one or the other.")
+        speed_cap = 0.0
+    if speed_cap is not None and speed_cap <= 0 and not args.no_speed_cap:
+        print("[yellow]--max_base_horizontal_speed <= 0 disables the cap; "
+              "--no_speed_cap says so explicitly.[/yellow]")
 
     if args.bvh_file:
         if args.save_path is None:
@@ -192,6 +235,8 @@ if __name__ == "__main__":
                 args.max_frames,
                 device=args.device,
                 collision_mode=args.collision_mode,
+                max_base_horizontal_speed=speed_cap,
+                ik_config=args.ik_config,
             )
             print(f"[green]Saved[/green]: {args.save_path} | frames={nframes} | fps={fps} | time={tel:.1f}s")
 
@@ -222,6 +267,8 @@ if __name__ == "__main__":
                     args.max_frames,
                     device=args.device,
                     collision_mode=args.collision_mode,
+                    max_base_horizontal_speed=speed_cap,
+                    ik_config=args.ik_config,
                 )
                 tqdm.write(f"Saved: {tgt_file_path} | frames={nframes} | fps={fps} | time={tel:.1f}s")
             except Exception as e:

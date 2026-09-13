@@ -25,6 +25,16 @@ parameters:
   ground_calib_warmup_iter : 200
   # Collision-avoidance mode: "cbf" (hard CBF) | "issf" (robustified CBF) | "off".
   collision_mode : issf
+  # Plane pairs (ground_collision below): give every SUPPORT POINT its own smooth row --
+  # both axis endpoints of a capsule, the centre of a sphere -- instead of the single row
+  # mj_geomDistance yields for the currently-closest point. The exact capsule-plane
+  # distance min(z_a, z_b) - r is a MINIMUM of two smooth functions, so it kinks wherever
+  # the two endpoints are level -- the normal condition for a foot in stance. The CBF
+  # linearizes only the reported branch and a step across the kink lands on the other one,
+  # which is where the ground penetration enters. Splitting the min into "z_a >= r AND
+  # z_b >= r" is the SAME feasible set with no kink, so it costs no tracking accuracy.
+  # false restores the older single-row behaviour.
+  plane_vertex_rows : true
 
   # Enable flags for the three IK limits (a constructor arg, if passed, overrides these).
   use_velocity_limit : true       # FrameVelocityLimit (real per-frame velocity, frame_velocity_limit)
@@ -159,14 +169,14 @@ collision_limits:
       - ["l_leg", "torso_upper"]
       - ["r_leg", "torso_upper"]
     cbf_gain : 1.0 # alpha = 1.5
-    issf_epsilon : 200.0
+    issf_epsilon : 1000.0
     margin: 0.02
     detect_dist: 0.05
 
   - name: "ground_collision"
     pairs:
-      - ["l_arm", "ground"]
-      - ["r_arm", "ground"]
+      - ["l_arm_all", "ground"]
+      - ["r_arm_all", "ground"]
       - ["r_leg", "ground"]
       - ["l_leg", "ground"]
       - ["torso", "ground"]

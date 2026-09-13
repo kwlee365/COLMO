@@ -24,11 +24,21 @@ Example
         --robots g1 h1 go2 --no_human \
         --record_video --video_path videos/compare_aiming1.mp4
 
+    # lossless PNG stills for a figure (stops after the last requested frame)
+    python scripts/vis_compare_robots.py --motion aiming1_subject1 \
+        --robots g1 kapex --snapshot_frames 0 60 120-200:20 \
+        --snapshot_dir figures \
+        --video_width 2560 --video_height 1440 --msaa 16 --font_scale 300
+
+Both output modes render OFFSCREEN ONLY (no live window); run them with
+``MUJOCO_GL=egl`` for a robust headless GL context over ssh.
+
 The result pkls live in ``results/<DIR>/<motion>.pkl`` (G1_COLMO, kapex_COLMO,
 h1_COLMO, t1_COLMO, go2_COLMO); the BVH lives in ``<motion_dir>/<motion>.bvh``.
 """
 
 import argparse
+import os
 import pickle
 import time
 from pathlib import Path
@@ -336,6 +346,24 @@ def build_scene_model(sources):
     return parent.compile()
 
 
+def make_floor_opaque(model):
+    """Force the shared floor plane to alpha=1 and return how many planes changed.
+
+    The robot XMLs ship a semi-transparent floor (g1: rgba alpha 0.5). MuJoCo
+    draws transparent geoms in a separate pass that receives no shadow map, so
+    the light's castshadow=True has no visible effect until the floor is opaque
+    -- the robots were casting shadows all along, onto a surface that could not
+    show them.
+    """
+    n = 0
+    for gid in range(model.ngeom):
+        if model.geom_type[gid] == mj.mjtGeom.mjGEOM_PLANE and \
+                model.geom_rgba[gid, 3] < 1.0:
+            model.geom_rgba[gid, 3] = 1.0
+            n += 1
+    return n
+
+
 def tint_robot(model, src):
     """Recolor a robot's visible geoms with its per-robot color."""
     rgb = np.asarray(src["color"][:3], dtype=np.float32)
@@ -428,6 +456,40 @@ def null_geom_names(model):
         model.name_geomadr[gid] = null_pos
 
 
+def parse_frame_spec(text):
+    """argparse type for one --snapshot_frames token: ``N``, ``A-B`` or ``A-B:STEP``.
+
+    Returns the frame indices the token stands for, with ``A-B`` INCLUSIVE of B, so
+    ``--snapshot_frames 0 60 100-200:10`` means frame 0, frame 60, and every 10th
+    frame from 100 through 200. (Same spec as vis_compare_retargeting.)
+    """
+    t = text.strip()
+    if "-" not in t:
+        try:
+            i = int(t)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"bad frame {text!r}; use N, A-B or A-B:STEP")
+        if i < 0:
+            raise argparse.ArgumentTypeError(f"negative frame {text!r}")
+        return [i]
+    span, _, step_text = t.partition(":")
+    start_text, _, end_text = span.partition("-")
+    try:
+        start, end = int(start_text), int(end_text)
+        step = int(step_text) if step_text else 1
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"bad frame range {text!r}; use A-B or A-B:STEP")
+    if start < 0:
+        raise argparse.ArgumentTypeError(f"negative frame in {text!r}")
+    if step <= 0:
+        raise argparse.ArgumentTypeError(f"step must be positive in {text!r}")
+    if end < start:
+        raise argparse.ArgumentTypeError(f"empty range {text!r} (end before start)")
+    return list(range(start, end + 1, step))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compare one COLMO motion across several robots "
@@ -484,7 +546,25 @@ def main():
                         help="Recolor each robot with its per-robot color "
                              "(default: keep the robots' natural colors).")
     parser.add_argument("--no_labels", action="store_true",
-                        help="Hide the floating robot labels.")
+                        help="Hide the floating robot labels (the head marker "
+                             "sphere carries the text, so this hides both).")
+    parser.add_argument("--shadow", action="store_true",
+                        help="Cast ground shadows under every character. The robot "
+                             "XMLs ship a semi-transparent floor, and MuJoCo draws "
+                             "transparent geoms in a pass that receives no shadow "
+                             "map, so shadows never appear until it is made opaque "
+                             "-- this does that. Recommended for paper figures: the "
+                             "contact shadow is what reads as 'standing on the "
+                             "floor' rather than floating.")
+    parser.add_argument("--shadow_size", type=int, default=8192,
+                        help="Shadow map resolution used with --shadow. Higher = "
+                             "crisper shadow edges. Try 4096 / 8192 / 16384.")
+    parser.add_argument("--shadow_skew", type=float, default=0.45,
+                        help="How far --shadow throws the shadows to the side, as "
+                             "a fraction of the straight-back direction. 0 casts "
+                             "them straight away from the camera (mostly hidden "
+                             "behind each character); negative throws them the "
+                             "other way.")
     parser.add_argument("--no_ground", action="store_true",
                         help="Do not ground-align the robots. By default each "
                              "robot is lifted by a constant so its lowest foot "
@@ -524,11 +604,28 @@ def main():
                              "right (meters). Default 0 keeps the symmetric row "
                              "centered.")
 
-    # Video recording.
+    # Video recording / snapshots. Both go through the same offscreen renderer, so
+    # they share --video_width/--video_height/--msaa/--font_scale.
     parser.add_argument("--record_video", action="store_true")
     parser.add_argument("--video_path", type=str, default=None,
                         help="Output video path. Default: "
                              "videos/compare_robots_<motion>.mp4.")
+    parser.add_argument("--snapshot_frames", type=parse_frame_spec, nargs="+",
+                        default=None, metavar="SPEC",
+                        help="Frames to save as lossless PNG stills into "
+                             "--snapshot_dir. Each token is a single frame (60), an "
+                             "inclusive range (0-500), or a strided range (0-500:10); "
+                             "mix them freely ('0 60 100-200:10'). Without "
+                             "--record_video the run stops after the last requested "
+                             "frame instead of playing the whole clip. In batch mode "
+                             "(--motion all) these frames are captured for EVERY "
+                             "motion.")
+    parser.add_argument("--snapshot_all", action="store_true",
+                        help="Save EVERY rendered frame as a PNG still into "
+                             "--snapshot_dir.")
+    parser.add_argument("--snapshot_dir", type=str, default="figures",
+                        help="Where --snapshot_frames / --snapshot_all PNGs are "
+                             "written (as <motion>_<robots>_<frame>.png).")
     parser.add_argument("--video_width", type=int, default=1280)
     parser.add_argument("--video_height", type=int, default=720)
     parser.add_argument("--video_quality", type=int, default=8,
@@ -541,6 +638,19 @@ def main():
                         help="Label text size in the recorded video (percent).")
 
     args = parser.parse_args()
+
+    # Each --snapshot_frames token parsed to a list of indices (ranges expand);
+    # flatten them into one sorted, de-duplicated frame list.
+    if args.snapshot_frames:
+        args.snapshot_frames = sorted(
+            {i for spec in args.snapshot_frames for i in spec})
+
+    snapshots = bool(args.snapshot_frames) or args.snapshot_all
+    if snapshots:
+        os.makedirs(args.snapshot_dir, exist_ok=True)
+        count = "every frame" if args.snapshot_all \
+            else f"{len(args.snapshot_frames)} frame(s)"
+        print(f"[cyan]Snapshots ({count}) -> {args.snapshot_dir}/[/cyan]")
 
     if args.video_path is None:
         name = "all" if args.motion == "all" else args.motion
@@ -561,7 +671,6 @@ def main():
     # One video for the whole run (motions appended back-to-back).
     mp4_writer = None
     if args.record_video:
-        import os
         import imageio
         video_dir = os.path.dirname(args.video_path)
         if video_dir and not os.path.exists(video_dir):
@@ -732,6 +841,22 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
 
     # --- Compose and prepare the MuJoCo model ------------------------------
     model = build_scene_model(sources)
+    if args.shadow:
+        make_floor_opaque(model)
+        # Crisper contact shadows at print resolution (default is 4096).
+        model.vis.quality.shadowsize = max(int(model.vis.quality.shadowsize),
+                                           args.shadow_size)
+        # Put the light on the CAMERA's side of the row so shadows fall away from
+        # the viewer (front-to-back). The shared light sits opposite the camera by
+        # default, which throws every shadow forward, toward the reader.
+        _az = np.deg2rad(cam_azimuth)
+        view = np.array([np.cos(_az), np.sin(_az), 0.0])   # camera -> scene
+        side = np.array([-np.sin(_az), np.cos(_az), 0.0])  # image-right in world
+        light_dir = view + args.shadow_skew * side + np.array([0.0, 0.0, -1.1])
+        light_dir /= np.linalg.norm(light_dir)
+        model.light_dir[0] = light_dir
+        row_mid = 0.5 * (column_offset(0) + column_offset(ncol - 1))
+        model.light_pos[0] = row_mid - light_dir * 7.0
     data = mj.MjData(model)
 
     # Body to hang each robot's label on, with z-clearance to float above the
@@ -793,6 +918,14 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
     row_center = 0.5 * (column_offset(0) + column_offset(ncol - 1))
 
     # --- Viewer setup -------------------------------------------------------
+    # When writing a video or PNG stills we render OFFSCREEN ONLY. Opening the
+    # live GLFW window at the same time as the offscreen mj.Renderer makes the
+    # two share/fight over the GL context, which tears or corrupts the captured
+    # frames (much worse under a mismatched GPU driver). So while rendering we
+    # skip the passive viewer and drive a standalone camera + option instead.
+    # For a robust headless GL context, run with ``MUJOCO_GL=egl``.
+    snapshot_set = set(args.snapshot_frames or [])
+    need_render = mp4_writer is not None or snapshot_set or args.snapshot_all
     paused = [False]
 
     def key_callback(keycode):
@@ -800,28 +933,40 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             paused[0] = not paused[0]
             print(f"[{'PAUSED' if paused[0] else 'RESUMED'}] (SPACE toggles)")
 
-    viewer = mjv.launch_passive(model=model, data=data,
-                                show_left_ui=False, show_right_ui=False,
-                                key_callback=key_callback)
-    viewer.opt.flags[mj.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+    if need_render:
+        viewer = None
+        cam = mj.MjvCamera()
+        cam.type = mj.mjtCamera.mjCAMERA_FREE
+        opt = mj.MjvOption()
+    else:
+        viewer = mjv.launch_passive(model=model, data=data,
+                                    show_left_ui=False, show_right_ui=False,
+                                    key_callback=key_callback)
+        cam = viewer.cam
+        opt = viewer.opt
+
+    opt.flags[mj.mjtVisFlag.mjVIS_TRANSPARENT] = 0
     # Collision proxies were already made invisible per-geom (hide_collision_geoms),
     # so no group toggle here — a group toggle would misfire across robots.
-    viewer.opt.label = mj.mjtLabel.mjLABEL_NONE
+    opt.label = mj.mjtLabel.mjLABEL_NONE
 
     # Distance: pull back far enough to frame the whole row (all ncol columns),
     # not just the robots. --cam_distance overrides the auto fit.
     row_span = (ncol - 1) * args.spacing
     if args.cam_distance is not None:
-        viewer.cam.distance = args.cam_distance
+        cam.distance = args.cam_distance
     else:
-        viewer.cam.distance = max(5.0, row_span + 1.0)
-    viewer.cam.azimuth = cam_azimuth
-    viewer.cam.elevation = args.cam_elevation
-    viewer.cam.lookat[:] = row_center + lookat_offset
+        cam.distance = max(5.0, row_span + 1.0)
+    cam.azimuth = cam_azimuth
+    cam.elevation = args.cam_elevation
+    cam.lookat[:] = row_center + lookat_offset
 
-    # --- Video recorder -----------------------------------------------------
+    # --- Offscreen renderer (video + snapshots) -----------------------------
+    # The mp4 writer is owned by the caller (shared across motions); here we only
+    # build this motion's offscreen renderer. Snapshots come out of the same
+    # renderer, so they share the resolution and AA settings.
     renderer = None
-    if mp4_writer is not None:
+    if need_render:
         model.vis.global_.offwidth = max(int(model.vis.global_.offwidth),
                                          args.video_width)
         model.vis.global_.offheight = max(int(model.vis.global_.offheight),
@@ -879,12 +1024,33 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                     np.array([0, 0, src["label_z"]])
                 add_sphere(scene, head_pos, 0.05, src["color"], label=src["label"])
 
-    pbar = tqdm(total=total_frames, desc="compare-robots")
+    # PNG stills. Named per motion + robot row so a batch run (and repeated runs
+    # with a different --robots) never overwrite each other's figures.
+    snap_count = 0
+    # Naming each PNG as it lands is useful for a handful of figures and pure noise
+    # for a whole range, so past a few frames only the closing tally is printed.
+    verbose_snaps = not args.snapshot_all and 0 < len(snapshot_set) <= 12
+    if snapshot_set or args.snapshot_all:
+        import imageio
+        snap_name = f"{motion}_{'-'.join(s['key'] for s in sources)}"
+        late = sorted(i for i in snapshot_set if i >= total_frames)
+        if late:
+            shown = late if len(late) <= 8 else late[:8] + ["..."]
+            print(f"[yellow]{len(late)} snapshot frame(s) {shown} are past the end "
+                  f"of {motion} ({total_frames} frames) -- not captured.[/yellow]")
+    # With snapshots only, there is nothing to capture past the last requested
+    # frame, so stop there instead of playing out the whole clip.
+    snapshot_stop = max(snapshot_set) if (
+        snapshot_set and mp4_writer is None and not args.snapshot_all) else None
+
+    pbar = tqdm(total=(total_frames if snapshot_stop is None
+                       else min(total_frames, snapshot_stop + 1)),
+                desc="compare-robots")
     rate_limiter = RateLimiter(frequency=motion_fps, warn=False)
     cur_i = 0
 
     try:
-        while viewer.is_running():
+        while (viewer.is_running() if viewer is not None else True):
             if not paused[0]:
                 for src in sources:
                     t = min(cur_i, src["n"] - 1)
@@ -902,19 +1068,32 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                 # Keep the row horizontally centered (so no end column drifts out
                 # of frame); follow only the vertical motion of the robot bases.
                 z = float(np.mean([data.xpos[s["base_bid"]][2] for s in sources]))
-                viewer.cam.lookat[:] = np.array(
+                cam.lookat[:] = np.array(
                     [row_center[0], row_center[1], z]) + lookat_offset
 
-            viewer.user_scn.ngeom = 0
-            draw_overlays(viewer.user_scn)
+            # Overlays for the live viewer (the offscreen recorder re-draws them
+            # into its own render scene below).
+            if viewer is not None:
+                viewer.user_scn.ngeom = 0
+                draw_overlays(viewer.user_scn)
+                viewer.sync()
 
-            viewer.sync()
-
+            # One render feeds both the video and the PNG stills (overlays must be
+            # re-drawn into the render scene). Skipped while paused so the
+            # recording is not padded with dupes.
             if renderer is not None and not paused[0]:
-                renderer.update_scene(data, camera=viewer.cam,
-                                      scene_option=viewer.opt)
+                renderer.update_scene(data, camera=cam, scene_option=opt)
                 draw_overlays(renderer.scene)
-                mp4_writer.append_data(renderer.render())
+                pixels = renderer.render()
+                if mp4_writer is not None:
+                    mp4_writer.append_data(pixels)
+                if args.snapshot_all or cur_i in snapshot_set:
+                    out = os.path.join(args.snapshot_dir,
+                                       f"{snap_name}_{cur_i:05d}.png")
+                    imageio.imwrite(out, pixels)
+                    snap_count += 1
+                    if verbose_snaps:
+                        print(f"[cyan]snapshot[/cyan] {out}")
 
             if renderer is None:
                 rate_limiter.sleep()
@@ -924,6 +1103,8 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
             pbar.update(1)
 
             cur_i += 1
+            if snapshot_stop is not None and cur_i > snapshot_stop:
+                break
             if cur_i >= total_frames:
                 if loop:
                     cur_i = 0
@@ -932,7 +1113,13 @@ def run_comparison(args, motion, mp4_writer, loop, bvh_override):
                     break
     finally:
         pbar.close()
-        viewer.close()
+        if snap_count and not verbose_snaps:
+            print(f"[cyan]{snap_count} snapshot(s) -> "
+                  f"{os.path.join(args.snapshot_dir, snap_name)}_*.png[/cyan]")
+        if viewer is not None:
+            viewer.close()
+        # Free this motion's GL renderer (the caller keeps the shared writer
+        # open so the next motion appends to the same file).
         if renderer is not None:
             renderer.close()
         time.sleep(0.3)

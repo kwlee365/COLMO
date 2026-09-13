@@ -30,6 +30,11 @@ Examples
         --smplx_file human_motion/kimodo/amass_00.npz --headless \
         --snapshot_frames 0 60 120 --snapshot_dir figures/teaser
 
+    # the SMPL-X body alone, paper-figure look, every 10th frame at 4K
+    MUJOCO_GL=egl python scripts/vis_smplx_body_with_robot.py \
+        --smplx_file human_motion/vicap/red_smplx.npz --human_only \
+        --snapshot_frames 0-150:10 --studio --supersample 2 --width 3840 --height 2160
+
     # semi-transparent human overlaid ON the robot + video
     python scripts/vis_smplx_body_with_robot.py \
         --smplx_file human_motion/kimodo/amass_00.npz \
@@ -58,6 +63,10 @@ from scipy.spatial.transform import Rotation as R
 from loop_rate_limiters import RateLimiter
 from rich import print
 from tqdm import tqdm
+
+from render_style import (FEET_LOOKAT_Z, STUDIO_FLOORS, apply_shadow, apply_studio,
+                          downsample, draw_foot_gap, elevation_for_eye_height, floor_height,
+                          label_font_scale, parse_frame_spec, shadow_light_params)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -386,6 +395,53 @@ def build_bundle(args, smplx_path, solve_to):
 # is EXACTLY the requested RGB. Texture data is uploaded to the GPU when the render
 # context is built, which happens after this runs, so no mjr_uploadTexture is needed.
 # ---------------------------------------------------------------------------
+class SkinFootGap:
+    """Lowest SMPL-X skin vertex under each foot, i.e. how far the human's sole is above
+    the floor (the human counterpart of vis_robot_motion --foot_gap).
+
+    A foot is every skin vertex whose LBS weight on that side's ankle + foot joints is
+    over one half. Their posed positions are computed here with the same blend MuJoCo's
+    skin applies (weights normalized per vertex, bone = its mocap body's pose), so this
+    works for the live viewer too, where the renderer's skin vertices are not reachable.
+    """
+
+    FOOT_JOINTS = {"L": ("left_ankle", "left_foot"), "R": ("right_ankle", "right_foot")}
+
+    def __init__(self, model, bone_names, joint_names, rest_verts, rest_joints,
+                 vertid, vertweight, thresh):
+        weights = np.zeros((len(rest_verts), len(bone_names)))
+        for b, (ids, ws) in enumerate(zip(vertid, vertweight)):
+            weights[ids, b] = ws
+        weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
+        self.sides = {}
+        for side, joints in self.FOOT_JOINTS.items():
+            cols = [joint_names.index(j) for j in joints]
+            vids = np.nonzero(weights[:, cols].sum(axis=1) > 0.5)[0]
+            w = weights[vids]
+            bones = np.nonzero(w.any(axis=0))[0]
+            self.sides[side] = (rest_verts[vids], w[:, bones], bones)
+        self.body_ids = np.array([model.body(n).id for n in bone_names])
+        self.rest_joints = np.asarray(rest_joints, dtype=np.float64)
+        self.floor_z = floor_height(model)
+        self.thresh = float(thresh)
+
+    def lowest_points(self, data):
+        pts = {}
+        for side, (verts, w, bones) in self.sides.items():
+            posed = np.zeros_like(verts)
+            for k, b in enumerate(bones):
+                bid = self.body_ids[b]
+                rot = data.xmat[bid].reshape(3, 3)
+                posed += w[:, k:k + 1] * ((verts - self.rest_joints[b]) @ rot.T + data.xpos[bid])
+            pts[side] = posed[int(np.argmin(posed[:, 2]))]
+        return pts
+
+    def draw(self, scene, data):
+        """Draw both feet's markers into `scene`; returns {side: gap [m]}."""
+        return {side: draw_foot_gap(scene, p, self.floor_z, self.thresh)
+                for side, p in self.lowest_points(data).items()}
+
+
 def parse_background(text):
     """'scene' -> None. '#RRGGBB' | 'R,G,B' (0-255) | 'white' -> uint8 (3,)."""
     s = str(text).strip()
@@ -478,6 +534,9 @@ def parse_args():
                         help="Folder holding the SMPL-X body models.")
     parser.add_argument("--robot", type=str, default="unitree_g1",
                         choices=list(ROBOT_XML_DICT.keys()))
+    parser.add_argument("--human_only", action="store_true",
+                        help="Draw only the SMPL-X body: no robot pass, and no IK solve or "
+                             "robot pkl needed (a --robot_motion_path is just ignored).")
     parser.add_argument("--robot_motion_path", type=str, default=None,
                         help="Replay a saved robot motion pkl instead of solving IK on "
                              "the fly. Must be the SAME motion and robot; the human side "
@@ -609,6 +668,24 @@ def parse_args():
                              "size difference show. No effect in side/overlay, where both "
                              "share one camera.")
     parser.add_argument("--no_follow_camera", action="store_true")
+    parser.add_argument("--cam_eye_height", type=float, default=None,
+                        help="Put the camera this many meters above the floor (overrides "
+                             "--cam_elevation, which is then derived from it). A few cm, with "
+                             "--cam_target feet and --studio_floor gray, gives a floor-level "
+                             "view where a floating sole shows background under it.")
+    parser.add_argument("--cam_target", choices=["root", "feet"], default="root",
+                        help="What the following camera looks at. root (default): the "
+                             "character's root at --cam_height. feet: the point between the "
+                             f"feet at {FEET_LOOKAT_Z} m -- a ground close-up for judging foot "
+                             "floating (pair with e.g. --cam_distance 1.0 --cam_elevation -4).")
+    parser.add_argument("--foot_gap", action="store_true",
+                        help="Overlay the human's foot clearance: a stem from the floor to "
+                             "the lowest skin vertex of each foot and a dot labeled in cm, "
+                             "colored like vis_robot_motion --foot_gap (gray on the ground, "
+                             "amber floating, red penetrating). Human only; snapshot values "
+                             "are also printed.")
+    parser.add_argument("--foot_gap_thresh", type=float, default=0.01,
+                        help="|clearance| [m] within which a foot counts as on the ground.")
     parser.add_argument("--cam_height", type=float, default=0.85,
                         help="Height (m) of the camera's reference point. Used as-is with "
                              "--no_follow_camera; otherwise only as the frame-0 value "
@@ -622,8 +699,10 @@ def parse_args():
     parser.add_argument("--video_path", type=str, default=None,
                         help="Default: videos/<smplx stem>_<robot>_body.mp4")
     parser.add_argument("--video_quality", type=int, default=8)
-    parser.add_argument("--snapshot_frames", type=int, nargs="+", default=None,
-                        metavar="I", help="Frame indices to save as PNG stills.")
+    parser.add_argument("--snapshot_frames", type=parse_frame_spec, nargs="+", default=None,
+                        metavar="SPEC",
+                        help="Frames to save as PNG stills. Each token is N, A-B or A-B:STEP "
+                             "(B inclusive), e.g. --snapshot_frames 0 60 100-200:20.")
     parser.add_argument("--snapshot_all", action="store_true",
                         help="Save EVERY rendered frame as a PNG still into "
                              "--snapshot_dir (honors --start_frame/--end_frame).")
@@ -642,6 +721,20 @@ def parse_args():
                              "character is drawn -- which also removes the ground shadow, "
                              "as there is no longer a floor to receive it. "
                              "Default: 184,184,184 (gray).")
+    parser.add_argument("--studio", action="store_true",
+                        help="Paper-figure look, same as vis_robot_motion --studio: white "
+                             "background, near-white floor faded into the sky (kept, so the "
+                             "ground shadow shows; overrides --background), and a softer "
+                             "directional light from the camera side.")
+    parser.add_argument("--studio_floor", choices=sorted(STUDIO_FLOORS), default="light",
+                        help="Floor tone for --studio: light (near-white, default) or gray "
+                             "(contrasts with the white background; use for floor-level shots).")
+    parser.add_argument("--shadow_skew", type=float, default=None,
+                        help="With --studio: how far the shadow is thrown sideways, as a "
+                             "fraction of straight away from the camera (default 0.15).")
+    parser.add_argument("--supersample", type=int, default=1,
+                        help="Render at N x --width/--height and downscale (Lanczos). 2 gives "
+                             "visibly cleaner edges; GPU memory grows with N^2.")
     parser.add_argument("--no_shadow", action="store_true",
                         help="Disable shadows in the rendered video/snapshots.")
     parser.add_argument("--shadowsize", type=int, default=8192,
@@ -654,6 +747,12 @@ def parse_args():
 def main():
     args = parse_args()
     smplx_path = pathlib.Path(args.smplx_file)
+    if args.supersample < 1:
+        raise SystemExit("--supersample must be >= 1")
+    if args.human_only:
+        if args.compare_pkl is not None:
+            raise SystemExit("--human_only draws no robot; drop --compare_pkl.")
+        args.robot_motion_path = None
 
     # A headless GL backend (MUJOCO_GL=egl/osmesa) has no window system, so the live
     # passive viewer cannot open -- trying to create its context fails ("Failed to make
@@ -672,7 +771,7 @@ def main():
     # --- motion bundle (cached solve) ---------------------------------------
     # --robot_motion_path supplies the robot pose itself, so no IK is needed; the human
     # side still has to be built. solve_to == 0 asks for a bundle with no IK in it.
-    solve_to = 0 if args.robot_motion_path else (
+    solve_to = 0 if (args.robot_motion_path or args.human_only) else (
         args.end_frame if args.end_frame is not None else np.iinfo(np.int32).max)
     bundle = resolve_bundle(args, smplx_path, solve_to)
 
@@ -716,7 +815,9 @@ def main():
         root_xy_traj = None
 
     # --- robot motion source -------------------------------------------------
-    if args.robot_motion_path is not None:
+    if args.human_only:
+        robot_pkl = None             # the robot is never shown, so it is never posed
+    elif args.robot_motion_path is not None:
         robot_pkl = _load_robot_pkl(args.robot_motion_path)
         print(f"[green]Robot motion[/green]: {args.robot_motion_path} "
               f"({len(robot_pkl[0])} frames, {robot_pkl[2].shape[1]} dof)")
@@ -777,11 +878,13 @@ def main():
     # any other layout puts all three in a side-by-side row.
     if compare:
         passes = ["human", "robot", "robot2"] if args.layout == "sequence" else ["both"]
+    elif args.human_only:
+        passes = ["human"]
     else:
         passes = ["human", "robot"] if args.layout == "sequence" else ["both"]
 
     # Flat backdrop: color the skybox and hide the floor (see parse_background above).
-    background_rgb = parse_background(args.background)
+    background_rgb = None if args.studio else parse_background(args.background)
     if background_rgb is not None:
         set_skybox(model, background_rgb)
         for gid in range(model.ngeom):
@@ -833,6 +936,20 @@ def main():
             raise SystemExit(f"--compare_pkl has {robot2_pkl[2].shape[1]} dof but robot "
                              f"'{robot2_name}' expects {robot2_ndof}.")
     mocap_ids = np.array([model.body_mocapid[model.body(n).id] for n in bone_names])
+    floor_z = floor_height(model)
+    foot_gap = (SkinFootGap(model, bone_names, joint_names, rest_verts, rest_joints,
+                            vertid, vertweight, args.foot_gap_thresh)
+                if args.foot_gap else None)
+    # --cam_target feet: the human's ankle joints, and each robot's ankle_roll bodies.
+    ankle_idx = [joint_names.index("left_ankle"), joint_names.index("right_ankle")]
+
+    def feet_bodies(prefix):
+        return [b for b in range(model.nbody)
+                if (mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, b) or "").startswith(prefix)
+                and "ankle_roll" in mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, b)]
+
+    robot_feet = feet_bodies(ROBOT_PREFIX)
+    robot2_feet = feet_bodies(ROBOT2_PREFIX) if compare else []
 
     # Per-frame posing is pure numpy on these: a (55, 3) scale row-vector and the joint
     # index of the root. The old path walked a 55-entry dict of tuples every frame.
@@ -955,7 +1072,9 @@ def main():
         return np.array([offset[0], offset[1], 0.0])
 
     # --- frame range ---------------------------------------------------------
-    n_total = min(len(joint_pos_all), len(robot_pkl[0]))
+    n_total = len(joint_pos_all)
+    if robot_pkl is not None:
+        n_total = min(n_total, len(robot_pkl[0]))
     if compare:
         n_total = min(n_total, len(robot2_pkl[0]))
     i0 = max(0, args.start_frame)
@@ -992,7 +1111,7 @@ def main():
                             else cam_azimuth + 180.0)
 
     dyaw_h = np.zeros(len(joint_pos_all))
-    dyaw_r = np.zeros(len(robot_pkl[1]))
+    dyaw_r = np.zeros(len(robot_pkl[1]) if robot_pkl is not None else n_total)
     dyaw_r2 = np.zeros(len(robot2_pkl[1])) if compare else None
     if face_mode != "off":
         try:
@@ -1004,8 +1123,9 @@ def main():
         if li is not None:
             fwd_h = np.cross([0.0, 0.0, 1.0], joint_pos_all[:, ri] - joint_pos_all[:, li])
             dyaw_h = target_yaw - np.arctan2(fwd_h[:, 1], fwd_h[:, 0])
-        fwd_r = R.from_quat(robot_pkl[1], scalar_first=True).apply(ROBOT_FORWARD_AXIS)
-        dyaw_r = target_yaw - np.arctan2(fwd_r[:, 1], fwd_r[:, 0])
+        if robot_pkl is not None:
+            fwd_r = R.from_quat(robot_pkl[1], scalar_first=True).apply(ROBOT_FORWARD_AXIS)
+            dyaw_r = target_yaw - np.arctan2(fwd_r[:, 1], fwd_r[:, 0])
         if compare:
             fwd_r2 = R.from_quat(robot2_pkl[1], scalar_first=True).apply(ROBOT_FORWARD_AXIS)
             dyaw_r2 = target_yaw - np.arctan2(fwd_r2[:, 1], fwd_r2[:, 0])
@@ -1015,10 +1135,11 @@ def main():
             dyaw_r[:] = dyaw_r[min(i0, len(dyaw_r) - 1)]
             if compare:
                 dyaw_r2[:] = dyaw_r2[min(i0, len(dyaw_r2) - 1)]
-        gap = np.rad2deg((dyaw_h[:n_total] - dyaw_r[:n_total] + np.pi) % (2 * np.pi) - np.pi)
-        print(f"[cyan]Facing[/cyan]: {face_mode} -> base yaw at "
-              f"{np.rad2deg(target_yaw) % 360:.1f} deg; human/robot heading difference "
-              f"{gap.mean():+.1f} deg (max |{np.abs(gap).max():.1f}|) corrected out")
+        if robot_pkl is not None:
+            gap = np.rad2deg((dyaw_h[:n_total] - dyaw_r[:n_total] + np.pi) % (2 * np.pi) - np.pi)
+            print(f"[cyan]Facing[/cyan]: {face_mode} -> base yaw at "
+                  f"{np.rad2deg(target_yaw) % 360:.1f} deg; human/robot heading difference "
+                  f"{gap.mean():+.1f} deg (max |{np.abs(gap).max():.1f}|) corrected out")
 
     facing = face_mode != "off"
 
@@ -1037,11 +1158,31 @@ def main():
             paused[0] = not paused[0]
             print(f"[{'PAUSED' if paused[0] else 'RESUMED'}] (SPACE toggles)")
 
+    # --- studio look / camera-side shadow light --------------------------------
+    # Applied before the viewer and renderer exist, and followed by an mj_forward:
+    # the per-frame mj_kinematics does not refresh light_xpos/xdir (see lights_static).
+    if args.studio:
+        apply_studio(model, cam_distance_base, args.studio_floor)
+        # Shadow map box: centered where the characters start (their lanes, or the
+        # clip's own coordinates with --root_mode absolute), sized by how far they travel.
+        root_xy = joint_pos_all[:, root_idx, :2]
+        travel = [np.linalg.norm(root_xy - root_xy[0], axis=1).max()]
+        if robot_pkl is not None:
+            r_xy = np.asarray(robot_pkl[0])[:, :2]
+            travel.append(np.linalg.norm(r_xy - r_xy[0], axis=1).max())
+        lanes = [np.linalg.norm(o[:2]) for o in (human_offset, robot_offset, robot2_offset)]
+        center = (root_xy[0] + human_offset[:2]) if args.root_mode == "absolute" else np.zeros(2)
+        skew, drop = shadow_light_params(True, args.shadow_skew)
+        apply_shadow(model, center, float(max(travel)) + float(max(lanes)), cam_azimuth,
+                     skew, drop, args.shadowsize, args.robot)
+        mj.mj_forward(model, data)
+
     viewer = None
     if not args.headless:
         viewer = mjv.launch_passive(model=model, data=data, show_left_ui=False,
                                     show_right_ui=False, key_callback=key_callback)
         cam, opt = viewer.cam, viewer.opt
+        viewer.user_scn.flags[mj.mjtRndFlag.mjRND_FOG] = args.studio  # copied to the main scene
     else:
         cam, opt = mj.MjvCamera(), mj.MjvOption()
         mj.mjv_defaultCamera(cam)
@@ -1066,16 +1207,19 @@ def main():
         # MjSpec.attach drops the child XML's <visual> block, so the composed model keeps
         # MuJoCo's 640x480 offscreen buffer and default AA. Grow both before the renderer
         # builds its GL context, or mj.Renderer refuses the requested resolution.
-        model.vis.global_.offwidth = max(int(model.vis.global_.offwidth), args.width)
-        model.vis.global_.offheight = max(int(model.vis.global_.offheight), args.height)
+        render_w, render_h = args.width * args.supersample, args.height * args.supersample
+        model.vis.global_.offwidth = max(int(model.vis.global_.offwidth), render_w)
+        model.vis.global_.offheight = max(int(model.vis.global_.offheight), render_h)
         model.vis.quality.offsamples = max(int(model.vis.quality.offsamples), args.msaa)
         # Some robot scenes (unitree_h1, booster_t1) light the floor with a big
         # shadow-casting directional light whose default shadow map is too coarse for a
         # 10k-vertex skin: it speckles the floor with acne. A finer map removes it.
         model.vis.quality.shadowsize = max(int(model.vis.quality.shadowsize),
                                            args.shadowsize)
-        renderer = mj.Renderer(model, height=args.height, width=args.width)
+        renderer = mj.Renderer(model, height=render_h, width=render_w,
+                               font_scale=label_font_scale(render_h))
         renderer.scene.flags[mj.mjtRndFlag.mjRND_SHADOW] = 0 if args.no_shadow else 1
+        renderer.scene.flags[mj.mjtRndFlag.mjRND_FOG] = args.studio
 
     if args.record_video:
         if args.video_path is None:
@@ -1087,14 +1231,14 @@ def main():
                                         quality=args.video_quality, macro_block_size=None)
         print(f"[cyan]Recording -> {args.video_path}[/cyan]")
 
-    snapshot_set = set(args.snapshot_frames or [])
+    snapshot_set = {i for spec in (args.snapshot_frames or []) for i in spec}
     if snapshot_set or args.snapshot_all:
         os.makedirs(args.snapshot_dir, exist_ok=True)
 
     # The ground offset is a single constant measured during the retargeter's first-frame
     # calibration; with a replayed pkl there was no calibration to read it from.
-    ground = 0.0 if (args.no_ground_offset or args.robot_motion_path) \
-        else float(bundle["ground_offset"])
+    ground = 0.0 if (args.no_ground_offset or args.robot_motion_path
+                     or int(bundle["n_solved"]) == 0) else float(bundle["ground_offset"])
 
     def human_positions(i):
         """Scaled world positions for every SMPL-X joint of frame i -- vectorized.
@@ -1129,18 +1273,20 @@ def main():
         # 1) Robot pose. In "frame0" the whole trajectory swings about the frame-0 root,
         #    so travel turns with the body; in "lock" each frame pivots on its OWN root,
         #    which leaves the root where it is and only re-aims the body.
-        root_pos, root_quat, dof = robot_pkl[0][i], robot_pkl[1][i], robot_pkl[2][i]
-        if robot_root0_xy[0] is None:
-            robot_root0_xy[0] = np.asarray(root_pos[:2], dtype=np.float64).copy()
-        pivot_r = robot_root0_xy[0] if face_mode == "frame0" else root_pos[:2]
-        root_pos = yaw_about(root_pos, pivot_r, dyaw_r[i])[0]
-        if facing:
-            root_quat = (R.from_euler("z", dyaw_r[i])
-                         * R.from_quat(root_quat, scalar_first=True)).as_quat(scalar_first=True)
-        shift = horizontal_shift(robot_offset, robot_root0_xy[0], root_pos[:2])
-        data.qpos[qadr:qadr + 3] = root_pos + shift
-        data.qpos[qadr + 3:qadr + 7] = root_quat
-        data.qpos[qadr + 7:qadr + 7 + robot_ndof] = dof
+        #    With --human_only there is no robot motion: the hidden robot keeps its pose.
+        if robot_pkl is not None:
+            root_pos, root_quat, dof = robot_pkl[0][i], robot_pkl[1][i], robot_pkl[2][i]
+            if robot_root0_xy[0] is None:
+                robot_root0_xy[0] = np.asarray(root_pos[:2], dtype=np.float64).copy()
+            pivot_r = robot_root0_xy[0] if face_mode == "frame0" else root_pos[:2]
+            root_pos = yaw_about(root_pos, pivot_r, dyaw_r[i])[0]
+            if facing:
+                root_quat = (R.from_euler("z", dyaw_r[i])
+                             * R.from_quat(root_quat, scalar_first=True)).as_quat(scalar_first=True)
+            shift = horizontal_shift(robot_offset, robot_root0_xy[0], root_pos[:2])
+            data.qpos[qadr:qadr + 3] = root_pos + shift
+            data.qpos[qadr + 3:qadr + 7] = root_quat
+            data.qpos[qadr + 7:qadr + 7 + robot_ndof] = dof
 
         # 1b) Second (compare) robot, driven exactly like the first from its own pkl.
         if compare:
@@ -1196,10 +1342,30 @@ def main():
             cam.lookat[0] = target[0] + lookat_offset[0]
             cam.lookat[1] = target[1] + lookat_offset[1]
             cam.lookat[2] = args.cam_height * cur_ratio[0]
+            if args.cam_target == "feet":
+                human_feet = pos[ankle_idx] + h_shift
+                if shown == "human":
+                    feet = human_feet
+                elif shown == "robot":
+                    feet = data.xpos[robot_feet]
+                elif shown == "robot2":
+                    feet = data.xpos[robot2_feet]
+                else:
+                    feet = np.vstack([human_feet, data.xpos[robot_feet + robot2_feet]])
+                cam.lookat[:2] = feet[:, :2].mean(axis=0) + lookat_offset[:2]
+                cam.lookat[2] = FEET_LOOKAT_Z * cur_ratio[0]
+        if args.cam_eye_height is not None:
+            cam.elevation = elevation_for_eye_height(args.cam_eye_height, cam.lookat,
+                                                     cam.distance, floor_z)
+
+    def show_foot_gap():
+        return foot_gap is not None and cur_pass[0] in ("human", "both")
 
     def render():
         renderer.update_scene(data, camera=cam, scene_option=opt)
-        return renderer.render()
+        if show_foot_gap():
+            foot_gap.draw(renderer.scene, data)
+        return downsample(renderer.render(), args.width, args.height)
 
     rate_limiter = None
     if viewer is not None and not args.no_rate_limit:
@@ -1233,6 +1399,10 @@ def main():
             step(i, shown)
 
             if viewer is not None:
+                if show_foot_gap():
+                    with viewer.lock():
+                        viewer.user_scn.ngeom = 0
+                        foot_gap.draw(viewer.user_scn, data)
                 viewer.sync()
             if mp4_writer is not None:
                 mp4_writer.append_data(render())
@@ -1241,6 +1411,10 @@ def main():
                 out = os.path.join(args.snapshot_dir,
                                    f"{smplx_path.stem}_{args.robot}{tag}_{i:05d}.png")
                 imageio.imwrite(out, render())
+                if show_foot_gap():
+                    gaps = foot_gap.draw(None, data)
+                    print(f"  human foot clearance: L {100 * gaps['L']:+.2f} cm, "
+                          f"R {100 * gaps['R']:+.2f} cm")
                 print(f"[cyan]snapshot[/cyan] {out}")
 
             # Cap to real time only for live viewing; when only recording, render as

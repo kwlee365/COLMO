@@ -172,8 +172,6 @@
       <joint name="floating_base_joint" type="free"/>
       <!-- <joint name="floating_base_joint" type="free" springdamper="0.01 1"/> -->
       <geom class="visual_geom" type="mesh" material="black" mesh="pelvis"/>
-      <geom name="Pelvis1" class="collision_geom" type="capsule" size="0.1312 0.06088" pos="-0.001 0.0 0.01851" quat="0.707107 0.707107 0 0"/>
-      <geom name="Pelvis2" class="collision_geom" type="capsule" size="0.145 0.06388" pos="-0.0308 0.0 -0.03551" quat="0.707107 0.707107 0 0"/>
 
       <body name="pelvis_link_cover">
         <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-07 1e-07 1e-07"/>
@@ -322,6 +320,8 @@
         <inertial pos="-0.001959 -7.953e-08 0.040667" quat="0.707081 0.707088 0.00555191 -0.00555196" mass="1.461" diaginertia="0.00290896 0.00268374 0.0024244"/>
         <joint name="waist_roll_joint" pos="0 0 0" axis="1 0 0" class="actuator_AK8064" range="-0.34907 0.34907" actuatorfrcrange="-120 120"/>
         <geom class="visual_geom" type="mesh" material="black" mesh="waist_roll_link"/>
+        <geom name="Pelvis1" class="collision_geom" type="capsule" size="0.1312 0.06088" pos="-0.028786 0.0 -0.055576" quat="0.707107 0.707107 0 0"/>
+        <geom name="Pelvis2" class="collision_geom" type="capsule" size="0.145 0.06388" pos="-0.058586 0.0 -0.109596" quat="0.707107 0.707107 0 0"/>
         <body name="waist_yaw_link" pos="0 0 0.0519">
           <inertial pos="-0.005028 -1.04e-05 0.0297" quat="7.25207e-05 0.715203 4.72721e-05 0.698917" mass="0.869" diaginertia="0.00207792 0.00186511 0.00168913"/>
           <joint name="waist_yaw_joint" pos="0 0 0" axis="0 0 1" class="actuator_AK8064_diff" range="-0.5236 0.5236" actuatorfrcrange="-120 120"/>

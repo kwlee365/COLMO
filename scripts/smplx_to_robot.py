@@ -61,6 +61,13 @@ if __name__ == "__main__":
         help="Limit the rate of the retargeted robot motion to keep the same as the human motion.",
     )
 
+    parser.add_argument(
+        "--hide_keyframes",
+        default=False,
+        action="store_true",
+        help="Do not draw the scaled human IK-target frames (RGB axes) over the robot.",
+    )
+
     args = parser.parse_args()
 
 
@@ -134,7 +141,7 @@ if __name__ == "__main__":
             root_pos=qpos[:3],
             root_rot=qpos[3:7],
             dof_pos=qpos[7:],
-            human_motion_data=retarget.scaled_human_data,
+            human_motion_data=None if args.hide_keyframes else retarget.scaled_human_data,
             # human_motion_data=smplx_data,
             human_pos_offset=np.array([0.0, 0.0, 0.0]),
             show_human_body_name=False,

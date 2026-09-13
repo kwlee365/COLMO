@@ -10,9 +10,12 @@ against these mesh-level kinematic quality metrics (all LOWER = better):
   5. Foot slide duration (frac of stance) Slide_dur    (paper detect_foot_sliding)
   6. Mean foot slide distance             Slide_dist   (paper detect_foot_sliding)
   7. Mean foot floating distance          Foot_float
-  8. Joint velocity violation frame frac. P_vel
+  8. Joint velocity violation frame frac. P_vel      (> 1.01x URDF limit)
   9. Shoulder roll saturation fraction    P_sat      (roll joints within eta of a limit)
  10. Shoulder yaw  saturation fraction    P_sat_yaw  (yaw  joints within eta of a limit)
+ 11. Shoulder velocity spike magnitude   ShSpike_p999 / ShSpike_max
+     (max |qdot| / v_max over the shoulder DoFs; 1.00 = limit never exceeded. P_vel only
+      says a limit was crossed, these say by how much.)
 
 Key modelling choices (documented so the numbers are reproducible):
 
@@ -51,7 +54,10 @@ Key modelling choices (documented so the numbers are reproducible):
   then the horizontal speed of the robot's toe link over the contact foot-frames.
 
 * Joint velocity limits come from the robot URDF (<limit velocity=...>); the
-  per-frame joint velocity is 30*(q_t - q_{t-1}) with a shortest-angle wrap.
+  per-frame joint velocity is 30*(q_t - q_{t-1}) with a shortest-angle wrap. A
+  frame counts as a violation only above (1 + --vel_margin) * v_max, default
+  1.01 * v_max, so a joint merely SATURATED at its limit is not flagged and only
+  real overshoots are. Use --vel_margin 0 for the strict > v_max test.
 
 Usage:
     python scripts/eval_kinematic.py --robot unitree_g1 \
@@ -173,6 +179,11 @@ def robot_metadata(robot):
                          if "shoulder_roll" in n]
     shoulder_yaw_idx = [i for i, n in enumerate(dof_names)
                         if "shoulder_yaw" in n]
+    # All shoulder DoFs (pitch/roll/yaw, both sides): the joints the shoulder key-body
+    # ablation is about. Used for the velocity-SPIKE magnitude metrics, which the binary
+    # P_vel fraction cannot express -- a source whose violations all sit at 1.001x v_max
+    # and one that reaches 8x both read as "violating".
+    shoulder_idx = [i for i, n in enumerate(dof_names) if "shoulder" in n]
 
     # Toe bodies for foot sliding (fall back to ankle_roll if no toe link).
     def body_id(cands):
@@ -247,7 +258,7 @@ def robot_metadata(robot):
                 mesh_geom_ids=mesh_geom_ids, geom_verts=geom_verts,
                 dof_names=dof_names, n_dof=n_dof, vmax=vmax,
                 jnt_range=jnt_range, shoulder_roll_idx=shoulder_roll_idx,
-                shoulder_yaw_idx=shoulder_yaw_idx,
+                shoulder_yaw_idx=shoulder_yaw_idx, shoulder_idx=shoulder_idx,
                 toe_bid=toe_bid, foot_geoms=foot_geoms,
                 hand_mesh_skip=hand_mesh_skip, hand_pen_geoms=hand_pen_geoms,
                 floor_z=floor_z, urdf_name=urdf_name)
@@ -627,9 +638,22 @@ def evaluate_motion(data_dict, bvh_frames, meta, args, mirrored=False):
     sat_frac = _sat_frac(meta["shoulder_roll_idx"])
     sat_frac_yaw = _sat_frac(meta["shoulder_yaw_idx"])
 
+    # 8) shoulder velocity SPIKE magnitude: |qdot| / v_max over the shoulder DoFs, reported
+    # as the peak and the 99.9th percentile. P_vel only says whether a limit was crossed;
+    # these say by how much, which is the difference between a joint saturated at its limit
+    # and a real spike.
+    sh = meta["shoulder_idx"]
+    if sh and qdot.size:
+        ratio = np.abs(qdot[:, sh]) / meta["vmax"][None, sh]
+        sh_spike_max = float(ratio.max())
+        sh_spike_p999 = float(np.percentile(ratio, 99.9))
+    else:
+        sh_spike_max = sh_spike_p999 = np.nan
+
     return dict(N=N, P_ground=P_ground, D_ground=D_ground, Foot_float=Foot_float,
                 P_self=P_self, D_self=D_self, Slide_dur=Slide_dur, Slide_dist=Slide_dist,
-                P_vel=P_vel, P_sat=sat_frac, P_sat_yaw=sat_frac_yaw)
+                P_vel=P_vel, P_sat=sat_frac, P_sat_yaw=sat_frac_yaw,
+                ShSpike_max=sh_spike_max, ShSpike_p999=sh_spike_p999)
 
 
 # --------------------------------------------------------------------------- #
@@ -693,11 +717,16 @@ def main():
                          "[m/frame] above which a sticking foot counts as sliding "
                          "(paper detect_foot_sliding default 0.01).")
     ap.add_argument("--eta", type=float, default=0.05, help="Shoulder saturation margin (range frac).")
-    ap.add_argument("--vel_margin", type=float, default=0.0,
+    ap.add_argument("--vel_margin", type=float, default=0.01,
                     help="Joint-velocity violation tolerance: a frame counts as a violation "
                          "only if a joint exceeds (1+vel_margin)*v_max, so joints saturated AT "
                          "the limit (soft-limit clamping) are not flagged. E.g. 0.10 = 10%% "
-                         "over-limit. Default 0.0 (strict > v_max).")
+                         "over-limit. Default 0.01 (1%% over the URDF limit): a retargeter "
+                         "whose own config rounds a limit (kapex writes the knee/hip_pitch "
+                         "URDF value 4.5451 as 4.55) otherwise reports every SATURATED frame "
+                         "as a violation -- measured on kapex/COLMO, 100%% of the flagged "
+                         "frames sat at exactly 1.0011x v_max. Pass 0.0 for the strict "
+                         "> v_max test.")
     ap.add_argument("--mirror", nargs="*", default=["omniretarget"], metavar="ALGO",
                     help="Sources stored left-right mirrored vs the source human "
                          "(default: omniretarget); their foot-contact L/R pairing is "
@@ -754,7 +783,8 @@ def main():
     # BVH (source human) contact frames are shared by all sources of a motion.
     per_rows = []          # (motion, algo, metrics...)
     agg = {k: {m: [] for m in ("P_ground", "D_ground", "Foot_float", "P_self", "D_self",
-                               "Slide_dur", "Slide_dist", "P_vel", "P_sat", "P_sat_yaw")}
+                               "Slide_dur", "Slide_dist", "P_vel", "P_sat", "P_sat_yaw",
+                               "ShSpike_max", "ShSpike_p999")}
            for k in args.algos}
     _dof_warned = set()    # sources skipped for a model/data dof mismatch (warn once each)
 
@@ -821,6 +851,10 @@ def main():
         ("P_vel",      "Vel violation %",      100, 2),
         ("P_sat",      "Shoulder-roll sat %",  100, 2),
         ("P_sat_yaw",  "Shoulder-yaw sat %",   100, 2),
+        # Spike MAGNITUDE on the shoulder DoFs, as a multiple of the joint's own v_max.
+        # 1.00 means "never exceeded"; P_vel cannot distinguish 1.001x from 8x.
+        ("ShSpike_p999", "Shoulder spike p99.9 x", 1, 3),
+        ("ShSpike_max",  "Shoulder spike max x",   1, 3),
     ]
     _known = ("gmr", "omniretarget", "unitree", "colmo")
     order = ([k for k in _known if k in args.algos]
@@ -847,13 +881,15 @@ def main():
             w = csv.writer(f)
             w.writerow(["motion", "source", "frames", "P_ground", "D_ground_m",
                         "FootFloat_m", "P_self", "D_self_m", "SlideDur", "SlideDist_m",
-                        "P_vel", "P_sat_roll", "P_sat_yaw"])
+                        "P_vel", "P_sat_roll", "P_sat_yaw",
+                        "ShSpike_p999", "ShSpike_max"])
             for motion, key, r in per_rows:
                 w.writerow([motion, ALGO_TABLE[key]["label"], r["N"],
                             r["P_ground"], r["D_ground"], r["Foot_float"],
                             r["P_self"], r["D_self"],
                             r["Slide_dur"], r["Slide_dist"], r["P_vel"],
-                            r["P_sat"], r["P_sat_yaw"]])
+                            r["P_sat"], r["P_sat_yaw"],
+                            r["ShSpike_p999"], r["ShSpike_max"]])
         print(f"[eval] per-motion metrics -> {out}")
 
 
